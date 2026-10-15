@@ -8,6 +8,10 @@ export interface ConvertedSong {
   artist?: string
   texData: string
   pdfData?: string // base64エンコードされたPDFデータ
+  /** Guitar Proファイル本体（base64）。あればtexDataより優先して読み込む */
+  gpData?: string
+  /** gpDataの元形式（gp/gp3/gp4/gp5/gpx） */
+  gpFormat?: string
   createdAt: number
   updatedAt: number
 }

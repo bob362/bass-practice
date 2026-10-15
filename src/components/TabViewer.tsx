@@ -8,6 +8,12 @@ import YouTubePanel from './YouTubePanel'
 import type { PositionListener } from './YouTubePanel'
 import SectionPanel from './SectionPanel'
 import type { BarRange } from './SectionPanel'
+import InputCheckPanel from './InputCheckPanel'
+import type { JudgeRange } from './InputCheckPanel'
+import SimplifyPanel from './SimplifyPanel'
+import type { SimplifyResult } from './SimplifyPanel'
+import { extractPlainScore } from '../utils/scoreModel'
+import type { PlainScore } from '../utils/scoreModel'
 
 // alphaTabのグローバルインポート
 declare global {
@@ -46,6 +52,20 @@ function tickToBar(api: any, tick: number): number | null {
   return index + 1
 }
 
+/** 曲データ（URL・alphaTex文字列・バイナリ）をalphaTabに読み込む */
+function loadSource(api: any, source: string | ArrayBuffer) {
+  if (typeof source === 'string') {
+    // 文字列の場合、URLかtexデータか判定
+    if (source.startsWith('/') || source.startsWith('http')) {
+      api.load(source)
+    } else {
+      api.tex(source)
+    }
+  } else {
+    api.load(source)
+  }
+}
+
 function barToTicks(api: any, startBar: number, endBar: number): { start: number; end: number } | null {
   const bars: any[] | undefined = api?.score?.masterBars
   if (!bars?.length) return null
@@ -69,6 +89,11 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
   const [barCount, setBarCount] = useState(0)
   const [sections, setSections] = useState<PracticeSection[]>([])
   const [activeSectionId, setActiveSectionId] = useState<string | null>(null)
+  /** 読み込んだ原曲の譜面（簡単アレンジは常にここから作る） */
+  const [originalScore, setOriginalScore] = useState<PlainScore | null>(null)
+  /** 現在表示・再生している譜面（簡単アレンジ適用後を含む） */
+  const [displayedScore, setDisplayedScore] = useState<PlainScore | null>(null)
+  const [simplified, setSimplified] = useState<SimplifyResult | null>(null)
 
   const timer = usePracticeTimer(songId, isPlaying)
 
@@ -86,6 +111,9 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
   /** 現在のループ周回の開始tickと、その周回中の最低テンポ */
   const passRef = useRef<{ startTick: number; minTempo: number } | null>(null)
   const positionListeners = useRef(new Set<PositionListener>())
+  const loopPassListeners = useRef(new Set<() => void>())
+  /** 次に読み込まれる譜面が簡単アレンジか（trueなら原曲のキャッシュを上書きしない） */
+  const loadingSimplifiedRef = useRef(false)
 
   const refreshSections = useCallback(() => {
     setSections(songId ? listSections(songId) : [])
@@ -99,6 +127,11 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
   const subscribePosition = useCallback((listener: PositionListener) => {
     positionListeners.current.add(listener)
     return () => { positionListeners.current.delete(listener) }
+  }, [])
+
+  const subscribeLoopPass = useCallback((listener: () => void) => {
+    loopPassListeners.current.add(listener)
+    return () => { loopPassListeners.current.delete(listener) }
   }, [])
 
   /** 100%テンポ基準の譜面位置（秒）。alphaTabのtimePositionは再生速度で伸縮済み */
@@ -147,6 +180,10 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
     setLoopEnd(null)
     setIsLooping(false)
     setBarCount(0)
+    setOriginalScore(null)
+    setDisplayedScore(null)
+    setSimplified(null)
+    loadingSimplifiedRef.current = false
 
     // StrictModeの二重実行などでスクリプト読み込み中にアンマウントされた場合、APIを生成しない
     let cancelled = false
@@ -212,7 +249,15 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
       })
 
       // イベントリスナーの設定
+      api.scoreLoaded.on((score: any) => {
+        const plain = extractPlainScore(score)
+        setDisplayedScore(plain)
+        if (!loadingSimplifiedRef.current) setOriginalScore(plain)
+      })
+
       api.renderFinished.on(() => {
+        // 譜面を差し替えるとプレイヤーも作り直されるため、速度を再適用する
+        api.playbackSpeed = tempoRef.current / 100
         setLoadError(null)
         setBarCount(api.score?.masterBars?.length ?? 0)
         setIsReady(true)
@@ -226,6 +271,7 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
       const wrapLoop = () => {
         const { loopStart } = loopRef.current
         recordLoopPassRef.current()
+        loopPassListeners.current.forEach(listener => listener())
         api.tickPosition = loopStart || 0
         startPass(loopStart || 0)
       }
@@ -261,19 +307,7 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
       apiRef.current = api
 
       // ファイルをロード
-      if (typeof filePath === 'string') {
-        // 文字列の場合、URLかtexデータか判定
-        if (filePath.startsWith('/') || filePath.startsWith('http')) {
-          // URLの場合はそのままロード
-          api.load(filePath)
-        } else {
-          // texデータの場合は直接渡す
-          api.tex(filePath)
-        }
-      } else {
-        // ArrayBufferの場合
-        api.load(filePath)
-      }
+      loadSource(api, filePath)
     }
 
     loadAlphaTab()
@@ -377,12 +411,41 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
     startPass(ticks.start)
   }
 
+  const handleApplySimplify = (tex: string, result: SimplifyResult) => {
+    const api = apiRef.current
+    if (!api) return
+    api.stop()
+    loadingSimplifiedRef.current = true
+    setSimplified(result)
+    setIsReady(false)
+    api.tex(tex)
+  }
+
+  const handleRestoreOriginal = () => {
+    const api = apiRef.current
+    if (!api) return
+    api.stop()
+    loadingSimplifiedRef.current = false
+    setSimplified(null)
+    setIsReady(false)
+    loadSource(api, filePath)
+  }
+
   const loopStartBar = isReady && loopStart !== null ? tickToBar(apiRef.current, loopStart) : null
   const loopEndBar = isReady && loopEnd !== null ? tickToBar(apiRef.current, Math.max(loopStart ?? 0, loopEnd - 1)) : null
   const loopRange = useMemo<BarRange | null>(() => {
     if (loopStartBar === null || loopEndBar === null || loopEndBar < loopStartBar) return null
     return { startBar: loopStartBar, endBar: loopEndBar }
   }, [loopStartBar, loopEndBar])
+
+  const activeSection = sections.find(s => s.id === activeSectionId) ?? null
+  const judgeRange = useMemo<JudgeRange | null>(() => {
+    if (activeSection) return { sectionId: activeSection.id, startBar: activeSection.startBar, endBar: activeSection.endBar }
+    if (loopRange && loopStart !== null && loopEnd !== null && loopEnd > loopStart) {
+      return { ...loopRange, startTick: loopStart, endTick: loopEnd }
+    }
+    return null
+  }, [activeSection, loopRange, loopStart, loopEnd])
 
   return (
     <>
@@ -524,6 +587,35 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
             activeSectionId={activeSectionId}
             onChanged={refreshSections}
             onLoopSection={handleLoopSection}
+          />
+        </div>
+
+        <div className="control-group">
+          <h3>入力判定</h3>
+          <InputCheckPanel
+            songId={songId}
+            score={displayedScore}
+            isPlaying={isPlaying}
+            tempoPercent={tempo}
+            simplifyLevel={simplified?.level ?? 0}
+            range={judgeRange}
+            sections={sections}
+            getTabSec={getTabSec}
+            subscribePosition={subscribePosition}
+            subscribeLoopPass={subscribeLoopPass}
+          />
+        </div>
+
+        <div className="control-group">
+          <h3>簡単アレンジ</h3>
+          <SimplifyPanel
+            originalScore={originalScore}
+            activeSection={activeSection}
+            loopRange={loopRange}
+            applied={simplified}
+            disabled={!isReady}
+            onApply={handleApplySimplify}
+            onRestore={handleRestoreOriginal}
           />
         </div>
 

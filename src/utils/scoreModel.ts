@@ -28,11 +28,16 @@ export function extractPlainScore(score: any): PlainScore {
     beats.forEach((beat: any, j: number) => {
       const startTick = beat.absolutePlaybackStart ?? ((beat.playbackStart ?? 0) + bar.startTick)
       const durationTicks = beat.playbackDuration ?? 960
-      ;(beat.notes ?? []).forEach((note: any, k: number) => notes.push({
+      ;(beat.notes ?? []).forEach((note: any, k: number) => {
+        // alphaTab's model numbers strings from the lowest (1 = lowest), while alphaTex and
+        // our PlainScore use 1 = highest string (matching tuning[0] = highest).
+        const string = tuning.length ? tuning.length - note.string + 1 : note.string
+        notes.push({
         id: `${bar.index}:${j}:${k}`, bar: bar.index, startTick, durationTicks, startSec: startTick * seconds, durationSec: durationTicks * seconds,
-        string: note.string, fret: note.fret, midi: note.realValue ?? tuning[note.string - 1] + note.fret,
+        string, fret: note.fret, midi: note.realValue ?? tuning[string - 1] + note.fret,
         ghost: !!note.isGhost, dead: !!note.isDead, slide: !!(note.slideOutType || note.slideInType), tie: !!note.isTieDestination,
-      }))
+        })
+      })
     })
   })
   return { title: score?.title ?? '', tempo, tuning, bars, notes }

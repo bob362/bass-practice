@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getAllSongs } from '../utils/storage'
 import type { ConvertedSong } from '../utils/storage'
-import { exportAllJSON, importAllJSON, listSessions, songProgress, streakDays, totalPracticeSec } from '../utils/progress'
+import { bestAccuracy, exportAllJSON, importAllJSON, listAccuracyRecords, listSections, listSessions, songProgress, streakDays, totalPracticeSec } from '../utils/progress'
+import type { AccuracyRecord } from '../utils/progress'
+import { SIMPLIFY_LEVEL_LABELS } from './SimplifyPanel'
 
 interface DashboardProps {
   onOpenSong: (song: ConvertedSong) => void
@@ -14,7 +16,12 @@ interface SongRow {
   total: number
   practiceSec: number
   lastPracticed: string | null
+  recentAccuracy: AccuracyRecord[]
+  sectionBest: { id: string; name: string; best: number }[]
+  sectionNames: Record<string, string>
 }
+
+const RECENT_ACCURACY_COUNT = 3
 
 export function formatDuration(sec: number): string {
   const minutes = Math.floor(sec / 60)
@@ -39,7 +46,13 @@ function formatLastPracticed(iso: string | null): string {
 function loadRows(): SongRow[] {
   return getAllSongs().map(song => {
     const progress = songProgress(song.id)
+    const records = listAccuracyRecords(song.id)
+    const sections = listSections(song.id).sort((a, b) => a.startBar - b.startBar || a.endBar - b.endBar)
+    const recorded = new Set(records.map(r => r.sectionId))
     return {
+      recentAccuracy: records.slice(0, RECENT_ACCURACY_COUNT),
+      sectionBest: sections.filter(s => recorded.has(s.id)).map(s => ({ id: s.id, name: s.name, best: bestAccuracy(song.id, s.id) })),
+      sectionNames: Object.fromEntries(sections.map(s => [s.id, s.name])),
       song,
       ...progress,
       practiceSec: totalPracticeSec(song.id),
@@ -127,6 +140,27 @@ export default function Dashboard({ onOpenSong }: DashboardProps) {
                   {row.song.artist && `${row.song.artist} • `}
                   練習時間 {formatDuration(row.practiceSec)} • 最終練習 {formatLastPracticed(row.lastPracticed)}
                 </div>
+                {row.recentAccuracy.length > 0 && (
+                  <div className="dashboard-accuracy">
+                    {row.sectionBest.length > 0 && (
+                      <div className="dashboard-accuracy-row">
+                        <span className="dashboard-accuracy-label">ベスト正確さ</span>
+                        {row.sectionBest.map(s => (
+                          <span key={s.id} className="accuracy-chip">{s.name} {Math.round(s.best)}%</span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="dashboard-accuracy-row">
+                      <span className="dashboard-accuracy-label">最近の判定</span>
+                      {row.recentAccuracy.map(r => (
+                        <span key={r.id} className="accuracy-chip" title={`${SIMPLIFY_LEVEL_LABELS[r.level]} • テンポ${r.tempoPercent}% • ${new Date(r.date).toLocaleString('ja-JP')}`}>
+                          {(r.sectionId && row.sectionNames[r.sectionId]) || `${r.startBar}〜${r.endBar}小節`} {Math.round(r.accuracy)}%
+                          {r.level > 0 && <span className="accuracy-chip-level">簡{r.level}</span>}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="dashboard-song-progress">
                 <div className="slider-label">

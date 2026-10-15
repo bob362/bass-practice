@@ -81,6 +81,8 @@ function barToTicks(api: any, startBar: number, endBar: number): { start: number
 
 export default function TabViewer({ filePath, pdfData, songId = null, onFileImport }: TabViewerProps) {
   const viewerRef = useRef<HTMLDivElement>(null)
+  /** 実際にスクロールする外側のコンテナ（alphaTabの描画先とは分ける） */
+  const scrollRef = useRef<HTMLDivElement>(null)
   const apiRef = useRef<any>(null)
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null)
   const [isPlaying, setIsPlaying] = useState(false)
@@ -244,7 +246,12 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
           enableCursor: true,
           enableUserInteraction: true,
           soundFont: `https://cdn.jsdelivr.net/npm/@coderline/alphatab@${ALPHATAB_VERSION}/dist/soundfont/sonivox.sf2`,
-          scrollElement: viewerRef.current,
+          // 描画先そのものをscrollElementにするとalphaTabのスクロール位置計算がずれ、
+          // 再生開始直後に末尾まで飛んでカーソルが画面外に出てしまう。外側のスクロールコンテナを渡す。
+          scrollElement: scrollRef.current ?? viewerRef.current,
+          scrollMode: 'continuous',
+          // カーソルが上端に張り付かないよう、表示領域の約1/3の位置に来るようにする
+          scrollOffsetY: -Math.round((scrollRef.current?.clientHeight ?? 600) / 3),
         }
       })
 
@@ -475,7 +482,9 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
           </div>
         )}
         <div className="tab-viewer-pane" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
-          <div ref={viewerRef} className="at-viewport" />
+          <div ref={scrollRef} className="at-viewport">
+            <div ref={viewerRef} className="at-surface-host" />
+          </div>
           {(loadError || !isReady) && (
             <div className="loading" style={{ position: 'absolute', inset: 0, background: '#1e1e1e' }}>
               {loadError ? `タブを表示できません: ${loadError}` : 'タブを読み込み中...'}

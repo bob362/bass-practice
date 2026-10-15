@@ -879,3 +879,10 @@
   fill: #4a9eff;
   stroke: #4a9eff;
 }
+
+.at-viewport {
+  position: relative;
+}
+.at-surface-host {
+  position: relative;
+}

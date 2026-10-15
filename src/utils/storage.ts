@@ -114,3 +114,46 @@ export function base64ToPdfBlob(base64: string): Blob {
   
   return new Blob([array], { type: 'application/pdf' })
 }
+
+export interface SongMediaSettings {
+  playthroughUrl?: string
+  originalUrl?: string
+  playthroughOffsetSec: number
+  originalOffsetSec: number
+  playbackRate: number
+}
+
+export const MEDIA_STORAGE_KEY = 'bass_practice_media'
+export const SONGS_STORAGE_KEY = STORAGE_KEY
+export const DEFAULT_MEDIA_SETTINGS: Readonly<SongMediaSettings> = {
+  playthroughOffsetSec: 0, originalOffsetSec: 0, playbackRate: 1,
+}
+
+export function isSongMediaSettings(value: unknown): value is SongMediaSettings {
+  if (!value || typeof value !== 'object') return false
+  const v = value as SongMediaSettings
+  return (v.playthroughUrl === undefined || typeof v.playthroughUrl === 'string') &&
+    (v.originalUrl === undefined || typeof v.originalUrl === 'string') &&
+    Number.isFinite(v.playthroughOffsetSec) && Number.isFinite(v.originalOffsetSec) &&
+    Number.isFinite(v.playbackRate) && v.playbackRate > 0
+}
+
+export function getAllMediaSettings(): Record<string, SongMediaSettings> {
+  try {
+    const data: unknown = JSON.parse(localStorage.getItem(MEDIA_STORAGE_KEY) ?? '{}')
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return {}
+    return Object.fromEntries(Object.entries(data).filter(([, value]) => isSongMediaSettings(value)))
+  } catch { return {} }
+}
+
+export function getSongMediaSettings(songId: string): SongMediaSettings {
+  return { ...DEFAULT_MEDIA_SETTINGS, ...getAllMediaSettings()[songId] }
+}
+
+export function saveSongMediaSettings(songId: string, updates: Partial<SongMediaSettings>): SongMediaSettings {
+  if (!songId) throw new Error('Song ID is required')
+  const settings = { ...getSongMediaSettings(songId), ...updates }
+  if (!isSongMediaSettings(settings)) throw new Error('Invalid media settings')
+  localStorage.setItem(MEDIA_STORAGE_KEY, JSON.stringify({ ...getAllMediaSettings(), [songId]: settings }))
+  return settings
+}

@@ -10,12 +10,43 @@
   padding: 1rem 1.5rem;
   border-bottom: 2px solid #3a3a3a;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .header h1 {
   font-size: 1.5rem;
   color: #4a9eff;
   margin: 0;
+}
+
+.header-nav {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.nav-button {
+  padding: 0.5rem 1rem;
+  background: transparent;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  color: #aaa;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-size: 0.9rem;
+  font-family: inherit;
+}
+
+.nav-button:hover {
+  background: #3a3a3a;
+  color: #e0e0e0;
+}
+
+.nav-button.active {
+  background: #4a9eff;
+  border-color: #4a9eff;
+  color: white;
 }
 
 .main-content {

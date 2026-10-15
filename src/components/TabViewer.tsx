@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import * as pdfjsLib from 'pdfjs-dist'
+import { base64ToPdfBlob } from '../utils/storage'
 
 // alphaTabのグローバルインポート
 declare global {
@@ -7,20 +9,25 @@ declare global {
   }
 }
 
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs`
+
 interface TabViewerProps {
   filePath: string | ArrayBuffer
+  pdfData?: string | null
   onFileImport: (event: React.ChangeEvent<HTMLInputElement>) => void
 }
 
-export default function TabViewer({ filePath, onFileImport }: TabViewerProps) {
+export default function TabViewer({ filePath, pdfData, onFileImport }: TabViewerProps) {
   const viewerRef = useRef<HTMLDivElement>(null)
   const apiRef = useRef<any>(null)
+  const pdfCanvasRef = useRef<HTMLCanvasElement>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [isReady, setIsReady] = useState(false)
   const [tempo, setTempo] = useState(100)
   const [loopStart, setLoopStart] = useState<number | null>(null)
   const [loopEnd, setLoopEnd] = useState<number | null>(null)
   const [isLooping, setIsLooping] = useState(false)
+  const [showPdf, setShowPdf] = useState(false)
 
   useEffect(() => {
     if (!viewerRef.current) return
@@ -43,6 +50,8 @@ export default function TabViewer({ filePath, onFileImport }: TabViewerProps) {
         link.href = 'https://cdn.jsdelivr.net/npm/@coderline/alphatab@latest/dist/alphaTab.css'
         document.head.appendChild(link)
       }
+
+      if (!viewerRef.current) return
 
       // alphaTab APIの初期化
       const api = new window.alphaTab.AlphaTabApi(viewerRef.current, {
@@ -103,8 +112,16 @@ export default function TabViewer({ filePath, onFileImport }: TabViewerProps) {
 
       // ファイルをロード
       if (typeof filePath === 'string') {
-        api.load(filePath)
+        // 文字列の場合、URLかtexデータか判定
+        if (filePath.startsWith('/') || filePath.startsWith('http')) {
+          // URLの場合はそのままロード
+          api.load(filePath)
+        } else {
+          // texデータの場合は直接渡す
+          api.tex(filePath)
+        }
       } else {
+        // ArrayBufferの場合
         api.load(filePath)
       }
     }
@@ -124,6 +141,37 @@ export default function TabViewer({ filePath, onFileImport }: TabViewerProps) {
       apiRef.current.playbackSpeed = tempo / 100
     }
   }, [tempo, isReady])
+
+  // PDFレンダリング
+  useEffect(() => {
+    if (pdfData && showPdf && pdfCanvasRef.current) {
+      renderPDF(pdfData)
+    }
+  }, [pdfData, showPdf])
+
+  const renderPDF = async (base64Data: string) => {
+    if (!pdfCanvasRef.current) return
+
+    try {
+      const blob = base64ToPdfBlob(base64Data)
+      const arrayBuffer = await blob.arrayBuffer()
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+      const page = await pdf.getPage(1)
+      const viewport = page.getViewport({ scale: 1.0 })
+
+      const canvas = pdfCanvasRef.current
+      const context = canvas.getContext('2d')!
+      canvas.width = viewport.width
+      canvas.height = viewport.height
+
+      await page.render({
+        canvasContext: context,
+        viewport: viewport,
+      }).promise
+    } catch (error) {
+      console.error('PDF rendering error:', error)
+    }
+  }
 
   const handlePlayPause = () => {
     if (!apiRef.current) return
@@ -164,9 +212,33 @@ export default function TabViewer({ filePath, onFileImport }: TabViewerProps) {
 
   return (
     <>
-      <div className="tab-container">
-        <div ref={viewerRef} className="at-viewport">
-          {!isReady && <div className="loading">タブを読み込み中...</div>}
+      <div className="tab-container" style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+        {showPdf && pdfData && (
+          <div style={{
+            width: '400px',
+            background: '#2a2a2a',
+            borderRight: '1px solid #3a3a3a',
+            padding: '1rem',
+            overflow: 'auto',
+          }}>
+            <h3 style={{ color: '#aaa', fontSize: '0.9rem', marginBottom: '1rem' }}>
+              元のPDF
+            </h3>
+            <canvas 
+              ref={pdfCanvasRef}
+              style={{
+                width: '100%',
+                height: 'auto',
+                border: '1px solid #3a3a3a',
+                borderRadius: '4px',
+              }}
+            />
+          </div>
+        )}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div ref={viewerRef} className="at-viewport">
+            {!isReady && <div className="loading">タブを読み込み中...</div>}
+          </div>
         </div>
       </div>
       <div className="controls-panel">
@@ -248,6 +320,18 @@ export default function TabViewer({ filePath, onFileImport }: TabViewerProps) {
           <div className="info-text">
             再生中の任意の位置でA地点・B地点を設定し、その区間を繰り返し練習できます。
           </div>
+        </div>
+
+        <div className="control-group">
+          <h3>表示</h3>
+          {pdfData && (
+            <button
+              className={`button ${showPdf ? 'button-primary' : 'button-secondary'} button-small`}
+              onClick={() => setShowPdf(!showPdf)}
+            >
+              {showPdf ? '📄 PDFを隠す' : '📄 PDFを表示'}
+            </button>
+          )}
         </div>
 
         <div className="control-group">

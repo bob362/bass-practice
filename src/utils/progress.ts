@@ -7,9 +7,13 @@ export interface PracticeSection {
   id: string; songId: string; name: string; startBar: number; endBar: number
   status: SectionStatus; maxTempoPercent: number; updatedAt: string
 }
-export interface ProgressData { version: 1; sessions: PracticeSession[]; sections: PracticeSection[] }
+export interface AccuracyRecord {
+  id: string; songId: string; sectionId?: string; startBar: number; endBar: number; level: 0 | 1 | 2 | 3
+  accuracy: number; hits: number; misses: number; early: number; late: number; total: number; tempoPercent: number; date: string
+}
+export interface ProgressData { version: 1; sessions: PracticeSession[]; sections: PracticeSection[]; accuracy?: AccuracyRecord[] }
 export const PROGRESS_STORAGE_KEY = 'bass_practice_progress'
-const empty = (): ProgressData => ({ version: 1, sessions: [], sections: [] })
+const empty = (): ProgressData => ({ version: 1, sessions: [], sections: [], accuracy: [] })
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 const nonempty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0
 const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
@@ -22,14 +26,20 @@ function sectionValid(v: unknown): v is PracticeSection {
     Number.isInteger(v.startBar) && (v.startBar as number) >= 1 && Number.isInteger(v.endBar) && (v.endBar as number) >= (v.startBar as number) &&
     ['not_started', 'practicing', 'mastered'].includes(v.status as string) && finite(v.maxTempoPercent) && v.maxTempoPercent >= 0 && date(v.updatedAt)
 }
+function accuracyValid(v: unknown): v is AccuracyRecord {
+  return record(v) && nonempty(v.id) && nonempty(v.songId) && (v.sectionId === undefined || nonempty(v.sectionId)) &&
+    Number.isInteger(v.startBar) && (v.startBar as number) >= 1 && Number.isInteger(v.endBar) && (v.endBar as number) >= (v.startBar as number) &&
+    [0, 1, 2, 3].includes(v.level as number) && finite(v.accuracy) && v.accuracy >= 0 && v.accuracy <= 100 &&
+    ['hits', 'misses', 'early', 'late', 'total'].every(k => Number.isInteger(v[k]) && (v[k] as number) >= 0) && finite(v.tempoPercent) && v.tempoPercent > 0 && date(v.date)
+}
 function progressValid(v: unknown): v is ProgressData {
-  return record(v) && v.version === 1 && Array.isArray(v.sessions) && v.sessions.every(sessionValid) && Array.isArray(v.sections) && v.sections.every(sectionValid) &&
+  return record(v) && (v.accuracy === undefined || (Array.isArray(v.accuracy) && v.accuracy.every(accuracyValid) && new Set(v.accuracy.map(a => a.id)).size === v.accuracy.length)) && v.version === 1 && Array.isArray(v.sessions) && v.sessions.every(sessionValid) && Array.isArray(v.sections) && v.sections.every(sectionValid) &&
     new Set(v.sessions.map(s => s.id)).size === v.sessions.length && new Set(v.sections.map(s => `${s.songId}\0${s.id}`)).size === v.sections.length
 }
 function read(): ProgressData {
   try {
     const value: unknown = JSON.parse(localStorage.getItem(PROGRESS_STORAGE_KEY) ?? 'null')
-    return progressValid(value) ? value : empty()
+    return progressValid(value) ? { ...value, accuracy: value.accuracy ?? [] } : empty()
   } catch { return empty() }
 }
 const write = (data: ProgressData) => localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(data))
@@ -106,7 +116,7 @@ export function importAllJSON(json: string, options: 'merge' | 'replace' | { mod
   if (!['merge', 'replace'].includes(mode) || !record(value) || value.version !== 1 || !Array.isArray(value.songs) || !value.songs.every(songValid) ||
     new Set(value.songs.map(s => s.id)).size !== value.songs.length || !record(value.media) || !Object.values(value.media).every(isSongMediaSettings) || !progressValid(value.progress)) throw new Error('Invalid or unsupported practice backup')
   const imported = value as unknown as PracticeBackup
-  let songs = imported.songs, media = imported.media, progress = imported.progress
+  let songs = imported.songs, media = imported.media, progress = { ...imported.progress, accuracy: imported.progress.accuracy ?? [] }
   if (mode === 'merge') {
     songs = [...new Map([...getAllSongs(), ...songs].map(s => [s.id, s])).values()]
     media = { ...getAllMediaSettings(), ...media }
@@ -118,7 +128,7 @@ export function importAllJSON(json: string, options: 'merge' | 'replace' | { mod
       const winner = prior && Date.parse(prior.updatedAt) > Date.parse(section.updatedAt) ? prior : section
       sections.set(key, { ...winner, maxTempoPercent: Math.max(prior?.maxTempoPercent ?? 0, section.maxTempoPercent) })
     }
-    progress = { version: 1, sessions: [...new Map([...current.sessions, ...progress.sessions].map(s => [s.id, s])).values()], sections: [...sections.values()] }
+    progress = { version: 1, sessions: [...new Map([...current.sessions, ...progress.sessions].map(s => [s.id, s])).values()], sections: [...sections.values()], accuracy: [...new Map([...(current.accuracy ?? []), ...(progress.accuracy ?? [])].map(a => [a.id, a])).values()] }
   }
   const entries = [[SONGS_STORAGE_KEY, JSON.stringify(songs)], [MEDIA_STORAGE_KEY, JSON.stringify(media)], [PROGRESS_STORAGE_KEY, JSON.stringify(progress)]]
   const previous = entries.map(([key]) => [key, localStorage.getItem(key)] as const)
@@ -127,4 +137,20 @@ export function importAllJSON(json: string, options: 'merge' | 'replace' | { mod
     for (const [key, data] of previous) { try { if (data === null) localStorage.removeItem(key); else localStorage.setItem(key, data) } catch { /* Best-effort rollback when storage is unavailable. */ } }
     throw error
   }
+}
+
+export function addAccuracyRecord(input: Omit<AccuracyRecord, 'id'> & { id?: string }): AccuracyRecord {
+  const entry = { ...input, id: input.id ?? newId() }
+  if (!accuracyValid(entry)) throw new Error('Invalid accuracy record')
+  const data = read()
+  if (data.accuracy?.some(a => a.id === entry.id)) throw new Error('Duplicate accuracy ID')
+  data.accuracy = [...(data.accuracy ?? []), entry]
+  write(data)
+  return entry
+}
+export function listAccuracyRecords(songId: string, sectionId?: string): AccuracyRecord[] {
+  return (read().accuracy ?? []).filter(a => a.songId === songId && (sectionId === undefined || a.sectionId === sectionId)).sort((a, b) => Date.parse(b.date) - Date.parse(a.date))
+}
+export function bestAccuracy(songId: string, sectionId?: string): number {
+  return Math.max(0, ...listAccuracyRecords(songId, sectionId).map(a => a.accuracy))
 }

@@ -56,3 +56,24 @@ describe('backups and progress', () => {
     expect(() => importAllJSON('invalid')).toThrow()
   })
 })
+
+import { addAccuracyRecord, listAccuracyRecords, bestAccuracy, PROGRESS_STORAGE_KEY } from './progress'
+it('reads legacy progress and round trips and deduplicates accuracy records', () => {
+  localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify({ version: 1, sessions: [], sections: [] }))
+  expect(listAccuracyRecords('song')).toEqual([])
+  const input = { songId: 'song', sectionId: 'intro', startBar: 1, endBar: 2, level: 2 as const, accuracy: 75, hits: 2, misses: 0, early: 1, late: 1, total: 4, tempoPercent: 80, date: '2026-10-15T00:00:00.000Z' }
+  addAccuracyRecord({ ...input, id: 'accuracy' })
+  session(15)
+  const backup = exportAllJSON()
+  localStorage.clear()
+  importAllJSON(backup, 'replace')
+  importAllJSON(backup)
+  expect(listAccuracyRecords('song', 'intro')).toHaveLength(1)
+  expect(listAccuracyRecords('song', 'elsewhere')).toEqual([])
+  expect(bestAccuracy('song', 'intro')).toBe(75)
+  expect(totalPracticeSec()).toBe(60)
+  expect(() => addAccuracyRecord({ ...input, accuracy: 101 })).toThrow()
+  const invalid = JSON.parse(backup)
+  invalid.progress.accuracy[0].level = 4
+  expect(() => importAllJSON(JSON.stringify(invalid))).toThrow()
+})

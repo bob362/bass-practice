@@ -31,6 +31,8 @@ export interface GpNote {
   dead?: boolean
   hammer?: boolean
   slide?: boolean
+  /** 前の同じ音からのタイ */
+  tie?: boolean
 }
 
 export interface GpBeat {
@@ -44,6 +46,8 @@ export interface GpBeat {
 export interface GpMeasure {
   beats: GpBeat[]
   timeSignature: { beats: number; beatType: number }
+  /** PDF上の小節番号。譜面の上に印字されていれば入る */
+  number?: number
 }
 
 export interface GpScore {
@@ -68,10 +72,37 @@ interface HSeg {
   x2: number
 }
 
+/** 連桁の片側の辺。Guitar Pro は少し傾いた細い矩形で描く */
+interface BeamEdge {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+}
+
+/** 対になった連桁。y1/y2 は左端・右端の中心線 */
+interface Beam {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+}
+
 interface VSeg {
   x: number
   y1: number
   y2: number
+}
+
+interface Curve {
+  x1: number
+  x2: number
+  y: number
+}
+
+interface Dot {
+  x: number
+  y: number
 }
 
 interface Staff {
@@ -107,23 +138,53 @@ function applyPt(m: number[], x: number, y: number): [number, number] {
   return [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]]
 }
 
-function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] }): { horiz: HSeg[]; vert: VSeg[] } {
+function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] }): {
+  horiz: HSeg[]
+  vert: VSeg[]
+  curves: Curve[]
+  dots: Dot[]
+  beamEdges: BeamEdge[]
+} {
   const OPS = pdfjsLib.OPS
   let ctm = [1, 0, 0, 1, 0, 0]
   const stack: number[][] = []
   const horiz: HSeg[] = []
   const vert: VSeg[] = []
+  const curves: Curve[] = []
+  const dots: Dot[] = []
+  const beamEdges: BeamEdge[] = []
 
   const pushSeg = (x1: number, y1: number, x2: number, y2: number) => {
     const [px1, py1] = applyPt(ctm, x1, y1)
     const [px2, py2] = applyPt(ctm, x2, y2)
     const dx = Math.abs(px2 - px1)
     const dy = Math.abs(py2 - py1)
-    if (dy < 1.3 && dx > 6) {
+    if (dy < 1.3 && dx > 4) {
       horiz.push({ y: (py1 + py2) / 2, x1: Math.min(px1, px2), x2: Math.max(px1, px2) })
     }
-    if (dx < 1.3 && dy > 12) {
+    if (dx < 1.6 && dy > 8) {
       vert.push({ x: (px1 + px2) / 2, y1: Math.min(py1, py2), y2: Math.max(py1, py2) })
+    }
+    // 連桁は水平とは限らない。符幹より十分寝ていて、譜線より短いものだけ候補にする
+    if (dx >= 8 && dx <= 200 && dy <= dx * 0.5 && dy < 18) {
+      const left = px1 <= px2
+      beamEdges.push({
+        x1: left ? px1 : px2,
+        y1: left ? py1 : py2,
+        x2: left ? px2 : px1,
+        y2: left ? py2 : py1,
+      })
+    }
+  }
+
+  const considerDot = (pts: Array<[number, number]>) => {
+    if (pts.length < 3) return
+    const xs = pts.map(p => p[0])
+    const ys = pts.map(p => p[1])
+    const w = Math.max(...xs) - Math.min(...xs)
+    const h = Math.max(...ys) - Math.min(...ys)
+    if (w >= 1.2 && w <= 5.5 && h >= 1.0 && h <= 5.5) {
+      dots.push({ x: (Math.min(...xs) + Math.max(...xs)) / 2, y: (Math.min(...ys) + Math.max(...ys)) / 2 })
     }
   }
 
@@ -139,24 +200,43 @@ function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] }): { hor
       let k = 0
       let cx = 0
       let cy = 0
+      let sub: Array<[number, number]> = []
+      const flush = () => {
+        considerDot(sub)
+        sub = []
+      }
       for (const o of ops) {
         if (o === 13) {
+          flush()
           cx = coords[k++]
           cy = coords[k++]
+          sub.push(applyPt(ctm, cx, cy))
         } else if (o === 14) {
           const x2 = coords[k++]
           const y2 = coords[k++]
           pushSeg(cx, cy, x2, y2)
           cx = x2
           cy = y2
+          sub.push(applyPt(ctm, cx, cy))
         } else if (o === 15) {
           k += 4
-          cx = coords[k++]
-          cy = coords[k++]
+          const x3 = coords[k++]
+          const y3 = coords[k++]
+          const [px, py] = applyPt(ctm, cx, cy)
+          const [qx, qy] = applyPt(ctm, x3, y3)
+          const dx = Math.abs(qx - px)
+          const dy = Math.abs(qy - py)
+          if (dx > 7 && dy < 7) curves.push({ x1: Math.min(px, qx), x2: Math.max(px, qx), y: (py + qy) / 2 })
+          cx = x3
+          cy = y3
+          sub.push([qx, qy])
         } else if (o === 16 || o === 17) {
           k += 2
           cx = coords[k++]
           cy = coords[k++]
+          sub.push(applyPt(ctm, cx, cy))
+        } else if (o === 18) {
+          flush()
         } else if (o === 19) {
           const x = coords[k++]
           const y = coords[k++]
@@ -166,18 +246,79 @@ function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] }): { hor
           pushSeg(x, y + h, x + w, y + h)
           pushSeg(x, y, x, y + h)
           pushSeg(x + w, y, x + w, y + h)
+          const p1 = applyPt(ctm, x, y)
+          const p2 = applyPt(ctm, x + w, y + h)
+          considerDot([p1, p2, [p1[0], p2[1]], [p2[0], p1[1]]])
         }
       }
+      flush()
     }
   }
-  return { horiz, vert }
+  return { horiz, vert, curves, dots, beamEdges }
 }
 
-function clusterY(segs: HSeg[]): Array<{ y: number; x1: number; x2: number }> {
+/**
+ * 連桁は太さ約 2.1pt の塗り矩形。辺を組にして 1 本と数える。
+ * 隣の連桁とのすき間は約 1pt なので、太さ 2.1 に一番近い相手を選ぶ。
+ */
+function pairBeamEdges(edges: BeamEdge[]): Beam[] {
+  const slope = (e: BeamEdge) => (e.y2 - e.y1) / (e.x2 - e.x1 || 1)
+  const partner = new Array<number>(edges.length).fill(-1)
+  for (let i = 0; i < edges.length; i++) {
+    const a = edges[i]
+    const as = slope(a)
+    const alen = a.x2 - a.x1
+    let best = -1
+    let bestScore = 0.9
+    for (let j = 0; j < edges.length; j++) {
+      if (i === j) continue
+      const b = edges[j]
+      const overlap = Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1)
+      if (overlap < alen * 0.75 || overlap < (b.x2 - b.x1) * 0.75) continue
+      if (Math.abs(as - slope(b)) > 0.05) continue
+      const dy = Math.abs(a.y1 + a.y2 - (b.y1 + b.y2)) / 2
+      if (dy < 1.15 || dy > 2.85) continue
+      const score = Math.abs(dy - 2.13)
+      if (score < bestScore) {
+        bestScore = score
+        best = j
+      }
+    }
+    partner[i] = best
+  }
+  const beams: Beam[] = []
+  const used = new Set<number>()
+  for (let i = 0; i < edges.length; i++) {
+    const j = partner[i]
+    if (j < 0 || partner[j] !== i || i > j || used.has(i)) continue
+    used.add(i)
+    used.add(j)
+    const a = edges[i]
+    const b = edges[j]
+    beams.push({
+      x1: (a.x1 + b.x1) / 2,
+      y1: (a.y1 + b.y1) / 2,
+      x2: (a.x2 + b.x2) / 2,
+      y2: (a.y2 + b.y2) / 2,
+    })
+  }
+  // 短い連桁は塗りではなく 1 本の線だけのことがある
+  for (let i = 0; i < edges.length; i++) {
+    if (used.has(i) || partner[i] >= 0) continue
+    const e = edges[i]
+    const len = e.x2 - e.x1
+    if (len < 10 || len > 80) continue
+    if (Math.abs(e.y2 - e.y1) / len > 0.4) continue
+    beams.push({ x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2 })
+  }
+  return beams
+}
+
+function clusterY(segs: HSeg[], pageH: number): Array<{ y: number; x1: number; x2: number }> {
   const sorted = [...segs].sort((a, b) => b.y - a.y)
   const clusters: Array<{ y: number; x1: number; x2: number; n: number; len: number }> = []
   for (const s of sorted) {
-    let c = clusters.find(c => Math.abs(c.y - s.y) < 0.7)
+    let c = clusters.find(c => Math.abs(c.y - s.y) < 0.8)
     if (!c) {
       c = { y: s.y, x1: s.x1, x2: s.x2, n: 0, len: 0 }
       clusters.push(c)
@@ -188,38 +329,56 @@ function clusterY(segs: HSeg[]): Array<{ y: number; x1: number; x2: number }> {
     c.x2 = Math.max(c.x2, s.x2)
     c.len += s.x2 - s.x1
   }
-  // 譜線は段のほぼ全幅。連桁は同じ高さに見えても総延長が短い
-  return clusters.filter(c => c.len > 280 && c.x2 - c.x1 > 120)
+  // フレットで途切れた譜線や、曲末の短い段も残す。ページ枠は除く
+  return clusters.filter(c => {
+    if (c.y < 8 || c.y > pageH - 8) return false
+    const span = c.x2 - c.x1
+    return span >= 70 && c.len >= 36
+  })
 }
 
 function findStaves(lines: Array<{ y: number; x1: number; x2: number }>): Staff[] {
+  // 同じ高さ帯に段いっぱいの譜線があるとき、1小節分の連桁は捨てる
+  const filtered = lines.filter(line => {
+    const span = line.x2 - line.x1
+    const neighbors = lines.filter(o => Math.abs(o.y - line.y) < 28)
+    const widest = Math.max(...neighbors.map(o => o.x2 - o.x1))
+    return span >= widest * 0.72
+  })
+  const sorted = [...filtered].sort((a, b) => b.y - a.y)
   const staves: Staff[] = []
-  let group: typeof lines = []
-  const flush = () => {
-    if (group.length === 4 || group.length === 5) {
-      const ys = group.map(g => g.y)
-      staves.push({
-        lines: ys,
-        kind: group.length === 4 ? 'tab' : 'notation',
-        x1: Math.min(...group.map(g => g.x1)),
-        x2: Math.max(...group.map(g => g.x2)),
-      })
-    }
-    group = []
+  const used = new Set<number>()
+
+  const take = (start: number, count: number, minGap: number, maxGap: number, kind: Staff['kind']) => {
+    if (start + count > sorted.length) return false
+    const group = sorted.slice(start, start + count)
+    if (group.some((_, i) => used.has(start + i))) return false
+    const gaps: number[] = []
+    for (let i = 1; i < group.length; i++) gaps.push(group[i - 1].y - group[i].y)
+    if (!gaps.every(g => g >= minGap && g <= maxGap)) return false
+    const x1 = Math.max(...group.map(g => g.x1))
+    const x2 = Math.min(...group.map(g => g.x2))
+    if (x2 - x1 < 60) return false
+    // 連桁は1小節分で、段の譜線より短い。譜線同士はほぼ同じ幅
+    const spans = group.map(g => g.x2 - g.x1)
+    const widest = Math.max(...spans)
+    if (spans.some(s => s < widest * 0.55)) return false
+    staves.push({
+      lines: group.map(g => g.y),
+      kind,
+      x1: Math.min(...group.map(g => g.x1)),
+      x2: Math.max(...group.map(g => g.x2)),
+    })
+    for (let i = 0; i < count; i++) used.add(start + i)
+    return true
   }
-  for (const line of lines) {
-    if (group.length === 0) {
-      group.push(line)
-      continue
-    }
-    const gap = group[group.length - 1].y - line.y
-    if (gap >= 3 && gap <= 9.5) group.push(line)
-    else {
-      flush()
-      group.push(line)
-    }
+
+  for (let i = 0; i < sorted.length; i++) {
+    if (used.has(i)) continue
+    // 五線は約4.2pt、タブは約6.4pt。連桁を混ぜないよう間隔を狭く見る
+    if (take(i, 5, 3.4, 5.3, 'notation')) continue
+    if (take(i, 4, 5.4, 7.6, 'tab')) continue
   }
-  flush()
   return staves
 }
 
@@ -256,22 +415,33 @@ function pairSystems(staves: Staff[]): System[] {
   return systems
 }
 
-function barlineXs(vert: VSeg[], staff: Staff): number[] {
+function verticalsOnStaff(vert: VSeg[], staff: Staff): number[] {
   const top = staff.lines[0]
   const bot = staff.lines[staff.lines.length - 1]
+  const need = (top - bot) * 0.62
   const xs: number[] = []
   for (const v of vert) {
-    if (v.x < staff.x1 - 4 || v.x > staff.x2 + 4) continue
-    const overlap = Math.min(v.y2, top + 2) - Math.max(v.y1, bot - 2)
-    if (overlap > 10) xs.push(v.x)
+    if (v.x < staff.x1 - 4 || v.x > staff.x2 + 8) continue
+    const height = v.y2 - v.y1
+    if (height > 60) continue
+    const overlap = Math.min(v.y2, top + 1.5) - Math.max(v.y1, bot - 1.5)
+    if (overlap >= need) xs.push(v.x)
   }
+  return xs
+}
+
+/** タブ譜を貫く縦線を小節線にする。符幹はタブまで届かない。 */
+function barlineXs(vert: VSeg[], _notation: Staff, tab: Staff): number[] {
+  const xs = verticalsOnStaff(vert, tab)
   xs.sort((a, b) => a - b)
   const clustered: number[] = []
   for (const x of xs) {
-    if (clustered.length === 0 || x - clustered[clustered.length - 1] > 2) clustered.push(x)
+    if (clustered.length === 0 || x - clustered[clustered.length - 1] > 3.2) clustered.push(x)
   }
-  if (clustered.length === 0 || clustered[0] > staff.x1 + 8) clustered.unshift(staff.x1)
-  if (clustered[clustered.length - 1] < staff.x2 - 8) clustered.push(staff.x2)
+  const left = Math.min(_notation.x1, tab.x1)
+  const right = Math.max(_notation.x2, tab.x2)
+  if (clustered.length === 0 || clustered[0] > left + 10) clustered.unshift(left)
+  if (clustered.length === 0 || clustered[clustered.length - 1] < right - 10) clustered.push(right)
   return clustered
 }
 
@@ -333,14 +503,93 @@ function detectTimeSignature(items: TextItem[], firstNotation: Staff | undefined
 
 interface RawBeat {
   x: number
+  y: number
   duration: number
   rest: boolean
   dead: boolean
+  /** high = 符尾・旗・休符グリフ。low = 符幹が見つからない符頭 */
+  confidence: 'high' | 'mid' | 'low'
+  tied?: boolean
+}
+
+function beamYAt(beam: Beam, x: number): number {
+  const t = (x - beam.x1) / (beam.x2 - beam.x1 || 1)
+  return beam.y1 + (beam.y2 - beam.y1) * t
+}
+
+function beamCountAt(
+  beams: Beam[],
+  staffLines: number[],
+  stemX: number,
+  stemTipY: number,
+  stemBaseY: number,
+): number {
+  const dir = stemTipY >= stemBaseY ? 1 : -1
+  // 符幹は譜線で切れ、連桁の手前で止まることがある
+  const far = stemTipY + dir * 8
+  const headLimit = stemBaseY + dir * 5
+  const ys: number[] = []
+  for (const b of beams) {
+    if (stemX < b.x1 - 3.5 || stemX > b.x2 + 3.5) continue
+    const y = beamYAt(b, stemX)
+    const beyondHead = dir > 0 ? y > headLimit : y < headLimit
+    const withinReach = dir > 0 ? y <= far : y >= far
+    if (!beyondHead || !withinReach) continue
+    // 譜線そのものは連桁にしない。譜線上に乗った短い連桁は残す
+    if (staffLines.some(ly => Math.abs(ly - y) < 0.85) && b.x2 - b.x1 > 100) continue
+    ys.push(y)
+  }
+  ys.sort((a, b) => b - a)
+  const levels: number[] = []
+  for (const y of ys) {
+    // 同じ矩形を二重に数えない。隣の連桁は約 3.2pt 離れる
+    if (!levels.some(l => Math.abs(l - y) < 1.8)) levels.push(y)
+  }
+  return levels.length
+}
+
+function stemFor(vert: VSeg[], head: TextItem): { x: number; tip: number; base: number } | null {
+  // グリフの height はフォントのアセント（約17pt）で、符頭の中心ではない
+  const hx = head.x + Math.min(head.w * 0.6, 3)
+  const hy = head.y + 1.6
+  const cands = vert.filter(v => {
+    if (Math.abs(v.x - hx) > 7) return false
+    if (v.y2 - v.y1 < 8 || v.y2 - v.y1 > 52) return false
+    return v.y1 < hy + 6 && v.y2 > hy - 6
+  })
+  if (cands.length === 0) return null
+  cands.sort((a, b) => {
+    const ax = Math.abs(a.x - hx)
+    const bx = Math.abs(b.x - hx)
+    if (Math.abs(ax - bx) > 1.2) return ax - bx
+    return (b.y2 - b.y1) - (a.y2 - a.y1)
+  })
+  const s = cands[0]
+  let tip = Math.abs(s.y2 - hy) >= Math.abs(s.y1 - hy) ? s.y2 : s.y1
+  let base = tip === s.y2 ? s.y1 : s.y2
+  // 符幹が譜線で分割されていることがある
+  let grew = true
+  while (grew) {
+    grew = false
+    for (const v of vert) {
+      if (Math.abs(v.x - s.x) > 1.3) continue
+      if (v.y2 - v.y1 < 6 || v.y2 - v.y1 > 55) continue
+      const far = Math.abs(v.y2 - hy) >= Math.abs(v.y1 - hy) ? v.y2 : v.y1
+      const nearEnd = Math.min(Math.abs(v.y1 - tip), Math.abs(v.y2 - tip))
+      if (nearEnd < 3.5 && Math.abs(far - hy) > Math.abs(tip - hy) + 2) {
+        tip = far
+        grew = true
+      }
+    }
+  }
+  return { x: s.x, tip, base }
 }
 
 function notationBeats(
   items: TextItem[],
-  beams: HSeg[],
+  beams: Beam[],
+  stems: VSeg[],
+  dotMarks: Dot[],
   system: System,
   x1: number,
   x2: number,
@@ -361,47 +610,20 @@ function notationBeats(
   const flags = items.filter(it => {
     if (it.str.length !== 1) return false
     const c = cp(it.str)
-    return c >= FLAG_8_UP && c <= FLAG_32_DOWN && it.x >= x1 - 4 && it.x < x2 + 4 && it.y < top + 28 && it.y > bot - 20
+    return c >= FLAG_8_UP && c <= FLAG_32_DOWN && it.x >= x1 - 4 && it.x < x2 + 4 && it.y < top + 48 && it.y > bot - 36
   })
   const dots = items.filter(it => cp(it.str) === AUG_DOT && it.x >= x1 && it.x < x2 + 6 && it.y < top + 16 && it.y > bot - 12)
 
-  const width = x2 - x1
   const localBeams = beams.filter(b => {
-    if (b.y > top + 16 || b.y < bot - 10) return false
-    // 譜線そのものは連桁に数えない。連桁の端が譜線に重なる場合は、もう一方の端が譜線の外にある
-    if (system.notation.lines.some(ly => Math.abs(ly - b.y) < 0.85)) return false
-    const a = Math.max(b.x1, x1)
-    const b2 = Math.min(b.x2, x2)
-    const len = b2 - a
-    // 7pt 前後は加線。連桁はもう少し長い
-    return len >= 11 && len < width * 0.72
+    const a = Math.max(b.x1, x1 - 4)
+    const b2 = Math.min(b.x2, x2 + 4)
+    const mid = (b.y1 + b.y2) / 2
+    return b2 - a >= 8 && mid < top + 52 && mid > bot - 46
   })
-
-  // 1本の連桁の上下端をまとめる
-  const levels: HSeg[][] = []
-  const sortedBeams = [...localBeams].sort((a, b) => b.y - a.y)
-  for (const b of sortedBeams) {
-    const hit = levels.find(level => Math.abs(level[0].y - b.y) < 2.6 && level.some(s => Math.min(s.x2, b.x2) - Math.max(s.x1, b.x1) > -4))
-    if (hit) hit.push(b)
-    else levels.push([b])
-  }
-
-  const beamCountAt = (x: number, y: number): number => {
-    let n = 0
-    for (const level of levels) {
-      const covers = level.some(s => {
-        const dy = Math.abs(s.y - y)
-        // 加線は符頭と同じ高さ。連桁は符頭から離れている
-        return x >= s.x1 - 8 && x <= s.x2 + 6 && dy > 4 && dy < 32
-      })
-      if (covers) n++
-    }
-    return n
-  }
 
   const flagDur = (head: TextItem): number | null => {
     const flag = flags
-      .filter(f => f.x >= head.x - 3 && f.x - head.x < 14 && Math.abs(f.y - head.y) < 22)
+      .filter(f => f.x >= head.x - 4 && f.x - head.x < 16 && Math.abs(f.y - head.y) < 26)
       .sort((a, b) => Math.abs(a.x - head.x) - Math.abs(b.x - head.x))[0]
     if (!flag) return null
     const c = cp(flag.str)
@@ -411,10 +633,12 @@ function notationBeats(
     return null
   }
 
+  // 符頭の中心はベースラインのすぐ上。height はフォントのアセントなので使わない
+  const headY = (head: TextItem) => head.y + 1.6
   const hasDot = (head: TextItem) =>
-    dots.some(d => d.x > head.x - 1 && d.x - head.x < 14 && Math.abs(d.y - head.y) < 10)
+    dots.some(d => d.x > head.x + 1 && d.x - head.x < 12 && Math.abs(d.y - headY(head)) < 5) ||
+    dotMarks.some(d => d.x > head.x + 2 && d.x - head.x < 11 && Math.abs(d.y - headY(head)) < 3.2)
 
-  // 同じXの符頭は和音
   const groups: TextItem[][] = []
   const sortedHeads = [...heads].sort((a, b) => a.x - b.x)
   for (const h of sortedHeads) {
@@ -428,21 +652,31 @@ function notationBeats(
     const head = g[0]
     const c = cp(head.str)
     let dur = 1
+    let confidence: RawBeat['confidence'] = 'high'
     if (c === NOTEHEAD_WHOLE) dur = 4
     else if (c === NOTEHEAD_HALF) dur = 2
     else {
-      const beamsN = Math.max(...g.map(h => beamCountAt(h.x + h.w * 0.5, h.y)))
+      const stem = stemFor(stems, head)
+      const flagged = flagDur(head)
+      const beamsN = stem ? beamCountAt(localBeams, system.notation.lines, stem.x, stem.tip, stem.base) : 0
       if (beamsN >= 3) dur = 0.125
       else if (beamsN === 2) dur = 0.25
       else if (beamsN === 1) dur = 0.5
-      else dur = flagDur(head) ?? 1
+      else if (flagged) dur = flagged
+      else if (stem) dur = 1
+      else {
+        dur = 1
+        confidence = 'low'
+      }
     }
     if (hasDot(head)) dur *= 1.5
     beats.push({
       x: head.x,
+      y: head.y,
       duration: dur,
       rest: false,
       dead: g.some(h => cp(h.str) === NOTEHEAD_X),
+      confidence,
     })
   }
 
@@ -458,8 +692,7 @@ function notationBeats(
     }
     let dur = map[c] ?? 1
     if (hasDot(r)) dur *= 1.5
-    // 全休符は小節の長さに合わせる（呼び出し側で調整）
-    beats.push({ x: r.x, duration: dur, rest: true, dead: false })
+    beats.push({ x: r.x, y: r.y, duration: dur, rest: true, dead: false, confidence: 'high' })
   }
 
   beats.sort((a, b) => a.x - b.x)
@@ -502,81 +735,116 @@ function expectedQuarters(ts: { beats: number; beatType: number }): number {
   return ts.beats * (4 / ts.beatType)
 }
 
-function trimToBar(beats: GpBeat[], expected: number): GpBeat[] {
-  const out = beats.map(b => ({ ...b, notes: b.notes }))
-  let guard = 0
-  while (guard++ < 8) {
-    const sum = out.reduce((s, b) => s + b.duration, 0)
-    const overflow = sum - expected
-    if (overflow <= 0.12) break
-    const restIdx = out.findIndex(b => b.notes.length === 0 && b.duration <= overflow + 0.05)
-    if (restIdx < 0) break
-    out.splice(restIdx, 1)
-  }
-  return out
+interface TimedEvent {
+  x: number
+  duration: number
+  confidence: RawBeat['confidence']
+  notes: GpNote[]
+  rest: boolean
 }
 
-function fillToBar(beats: GpBeat[], expected: number): GpBeat[] {
-  const sum = beats.reduce((s, b) => s + b.duration, 0)
-  const diff = expected - sum
-  if (Math.abs(diff) < 0.05) return beats
-  if (diff > 0.2 && diff <= expected) {
-    // 足りない分が一般的な休符なら足す
-    const rest = snapDuration(diff)
-    if (rest && Math.abs(rest - diff) < 0.08) return [...beats, { duration: rest, notes: [] }]
-  }
-  if (diff < -0.2 && beats.length && beats[beats.length - 1].notes.length === 0) {
-    const trimmed = beats.slice(0, -1)
-    const s2 = trimmed.reduce((s, b) => s + b.duration, 0)
-    if (Math.abs(s2 - expected) < Math.abs(sum - expected)) return fillToBar(trimmed, expected)
-  }
-  return beats
+/** 4分音符 = 8。4/4 は 32。付点8分は 6。 */
+function toUnits(quarters: number): number {
+  return Math.round(quarters * 8)
 }
 
-function snapDuration(q: number): number | null {
-  const options = [4, 3, 2, 1.5, 1, 0.75, 0.5, 0.375, 0.25, 0.125]
-  let best: number | null = null
-  let err = 0.08
-  for (const o of options) {
-    const e = Math.abs(o - q)
-    if (e < err) {
-      err = e
-      best = o
+function fromUnits(units: number): number {
+  return units / 8
+}
+
+/**
+ * 読み取った音価の合計を小節の拍数に合わせる。
+ * 休符グリフや旗は動かさず、符幹のない符頭だけ別の音価を試す。
+ * 安い直しが無ければ、読んだままを残す。
+ */
+function fitToBar(events: TimedEvent[], expected: number): TimedEvent[] {
+  if (events.length === 0) return events
+  const target = toUnits(expected)
+  const sum = events.reduce((s, e) => s + toUnits(e.duration), 0)
+  if (sum === target) return events
+
+  const options = events.map(e => {
+    const pref = toUnits(e.duration)
+    const opts: Array<{ units: number; cost: number }> = [{ units: pref, cost: 0 }]
+    if (e.confidence === 'low') {
+      for (const q of [2, 1, 0.5, 0.25, 0.125]) {
+        const u = toUnits(q)
+        if (u !== pref && u > 0) opts.push({ units: u, cost: 1 })
+      }
+    }
+    return opts
+  })
+
+  const dp: Array<Map<number, number>> = Array.from({ length: events.length + 1 }, () => new Map())
+  dp[0].set(0, 0)
+  for (let i = 0; i < events.length; i++) {
+    for (const [used, cost] of dp[i]) {
+      for (const opt of options[i]) {
+        const next = used + opt.units
+        if (next > target) continue
+        const nc = cost + opt.cost
+        const prev = dp[i + 1].get(next)
+        if (prev == null || nc < prev) dp[i + 1].set(next, nc)
+      }
     }
   }
-  return best
+  const best = dp[events.length].get(target)
+  if (best == null || best > 3) return events
+
+  const chosen: number[] = []
+  let used = target
+  for (let i = events.length - 1; i >= 0; i--) {
+    let found = options[i][0]
+    for (const opt of options[i]) {
+      const prevUsed = used - opt.units
+      if (dp[i].get(prevUsed) == null) continue
+      if (dp[i].get(prevUsed)! + opt.cost === dp[i + 1].get(used)) {
+        found = opt
+        break
+      }
+    }
+    chosen.push(found.units)
+    used -= found.units
+  }
+  chosen.reverse()
+  return events.map((e, i) => ({ ...e, duration: fromUnits(chosen[i]) }))
 }
 
-function equalFallback(groups: Array<{ notes: GpNote[] }>, expected: number): GpBeat[] {
-  const n = Math.max(1, groups.length)
-  const options = [4, 2, 1, 0.5, 0.25, 0.125]
-  let best = options[0]
-  let err = Infinity
-  for (const o of options) {
-    const e = Math.abs(n * o - expected)
-    if (e < err) {
-      err = e
-      best = o
+function applyTies(events: TimedEvent[], curves: Curve[]) {
+  const noted = events.filter(e => !e.rest)
+  for (const curve of curves) {
+    const left = [...noted].reverse().find(e => e.notes.some(n => n.string > 0) && e.x <= curve.x1 + 6 && curve.x1 - e.x < 22)
+    const right = noted.find(e => e !== left && e.x > (left?.x ?? 0) && e.x >= curve.x1 && e.x <= curve.x2 + 12)
+    if (!left || !right) continue
+    const placeholder = right.notes.length === 1 && right.notes[0].string === 0
+    if (placeholder && left.notes.length === 1 && left.notes[0].string > 0) {
+      const src = left.notes[0]
+      right.notes = [{ string: src.string, fret: src.fret, dead: src.dead, tie: true }]
+      continue
+    }
+    for (const note of right.notes) {
+      const src = left.notes.find(n => n.string === note.string && n.string > 0)
+      if (src && note.fret === src.fret && !!note.dead === !!src.dead) note.tie = true
     }
   }
-  const beats: GpBeat[] = groups.map(g => ({ duration: best, notes: g.notes }))
-  return fillToBar(beats, expected)
 }
 
 function buildMeasure(
   items: TextItem[],
-  beams: HSeg[],
+  beams: Beam[],
+  stems: VSeg[],
+  curves: Curve[],
+  dotMarks: Dot[],
   system: System,
   x1: number,
   x2: number,
   ts: { beats: number; beatType: number },
 ): GpMeasure {
   const expected = expectedQuarters(ts)
-  const raw = notationBeats(items, beams, system, x1, x2)
+  const raw = notationBeats(items, beams, stems, dotMarks, system, x1, x2)
   const frets = fretsInMeasure(items, system.tab, x1, x2)
   const marks = techniqueMarks(items, system, x1, x2)
 
-  // フレットをXでまとめる（和音）
   const fretGroups: Array<{ x: number; notes: GpNote[] }> = []
   for (const f of [...frets].sort((a, b) => a.x - b.x)) {
     const g = fretGroups.find(g => Math.abs(g.x - f.x) < 4.2)
@@ -584,25 +852,22 @@ function buildMeasure(
     else fretGroups.push({ x: f.x, notes: [{ string: f.string, fret: f.fret, dead: f.dead }] })
   }
 
-  const used = new Set<number>()
-  const beats: GpBeat[] = []
-
   if (raw.length === 0 && fretGroups.length === 0) {
     return { beats: [{ duration: expected, notes: [] }], timeSignature: ts }
   }
 
-  // 記譜の拍にフレットを対応させる
-  const events: Array<{ x: number; duration: number; rest: boolean; notes: GpNote[]; dead: boolean }> = []
+  const used = new Set<number>()
+  const events: TimedEvent[] = []
   for (const b of raw) {
     if (b.rest) {
-      events.push({ x: b.x, duration: b.duration, rest: true, notes: [], dead: false })
+      events.push({ x: b.x, duration: b.duration, confidence: b.confidence, notes: [], rest: true })
       continue
     }
     let best = -1
-    let bestD = 9
+    let bestD = 8
     fretGroups.forEach((g, i) => {
       if (used.has(i)) return
-      const d = Math.abs(g.x - (b.x + 2))
+      const d = Math.abs(g.x - (b.x + Math.min(6, (g.notes[0] ? 2 : 2))))
       if (d < bestD) {
         bestD = d
         best = i
@@ -611,55 +876,42 @@ function buildMeasure(
     if (best >= 0) {
       used.add(best)
       const notes = fretGroups[best].notes.map(n => ({ ...n, dead: n.dead || b.dead }))
-      events.push({ x: b.x, duration: b.duration, rest: false, notes, dead: b.dead })
-    } else if (!b.rest) {
-      // 符頭だけでフレットが無い → 休符扱いにしない（タブ側の取りこぼし）。スキップして後で未使用フレットを足す
+      events.push({ x: b.x, duration: b.duration, confidence: b.confidence, notes, rest: false })
+    } else {
+      // タイでフレットが省略された符頭。音は後でタイから写す
+      events.push({
+        x: b.x,
+        duration: b.duration,
+        confidence: b.confidence,
+        notes: [{ string: 0, fret: 0, dead: b.dead }],
+        rest: false,
+      })
     }
   }
   fretGroups.forEach((g, i) => {
     if (used.has(i)) return
-    const prev = [...events].reverse().find(e => e.x <= g.x)
-    events.push({
-      x: g.x,
-      duration: prev?.duration ?? 0.5,
-      rest: false,
-      notes: g.notes,
-      dead: false,
-    })
+    events.push({ x: g.x, duration: 0.5, confidence: 'low', notes: g.notes, rest: false })
   })
   events.sort((a, b) => a.x - b.x)
 
-  // 全休符だけの小節
+  const localCurves = curves.filter(c => c.x2 > x1 - 2 && c.x1 < x2 + 2 && c.y < system.notation.lines[0] + 20 && c.y > system.tab.lines[system.tab.lines.length - 1] - 8)
+  applyTies(events, localCurves)
+  const kept = events.filter(e => e.rest || e.notes.some(n => n.string > 0))
+  for (const e of kept) e.notes = e.notes.filter(n => n.string > 0)
+
   if (frets.length === 0 && raw.length === 1 && raw[0].rest && raw[0].duration >= 2) {
     return { beats: [{ duration: expected, notes: [] }], timeSignature: ts }
   }
 
-  for (const e of events) {
-    if (e.rest) beats.push({ duration: e.duration, notes: [], x: e.x })
-    else if (e.notes.length) beats.push({ duration: e.duration, notes: e.notes, x: e.x })
-  }
+  const fitted = fitToBar(kept, expected)
+  const beats: GpBeat[] = fitted
+    .filter(e => e.notes.length > 0 || e.duration > 0)
+    .map(e => ({ duration: e.duration, notes: e.notes, x: e.x }))
 
   applyTechniques(beats, marks)
 
-  const trimmed = trimToBar(beats, expected)
-  const sum = trimmed.reduce((s, b) => s + b.duration, 0)
-  const noted = trimmed.filter(b => b.notes.length)
-  const beamed = noted.filter(b => b.duration <= 0.5).length
-  const rhythmKnown = noted.length > 0 && beamed / noted.length >= 0.45
-  let finalBeats = trimmed
-  if (trimmed.length === 0) {
-    finalBeats = [{ duration: expected, notes: [] }]
-  } else if (!rhythmKnown && Math.abs(sum - expected) / expected > 0.34) {
-    const kept = beats.filter(b => b.notes.length)
-    finalBeats = equalFallback(
-      kept.map(b => ({ notes: b.notes })),
-      expected,
-    )
-  } else {
-    finalBeats = fillToBar(beats, expected)
-  }
-
-  return { beats: finalBeats, timeSignature: ts }
+  if (beats.length === 0) return { beats: [{ duration: expected, notes: [] }], timeSignature: ts }
+  return { beats, timeSignature: ts }
 }
 
 function applyTechniques(beats: GpBeat[], marks: Array<{ x: number; kind: 'h' | 'sl' }>) {
@@ -669,19 +921,25 @@ function applyTechniques(beats: GpBeat[], marks: Array<{ x: number; kind: 'h' | 
     for (const n of b.notes) sequenced.push({ note: n, x: b.x })
   }
   for (const mark of marks) {
-    let best: { left: (typeof sequenced)[0]; gap: number } | null = null
+    let best: { left: (typeof sequenced)[0]; score: number } | null = null
     for (let i = 0; i < sequenced.length; i++) {
-      const left = sequenced[i]
-      const right = sequenced.slice(i + 1).find(c => c.note.string === left.note.string)
-      if (right) {
-        if (mark.x >= left.x - 8 && mark.x <= right.x + 10) {
-          const gap = right.x - left.x
-          if (!best || gap < best.gap) best = { left, gap }
-        }
-      } else if (mark.kind === 'sl' && mark.x >= left.x - 4) {
-        const gap = mark.x - left.x
-        if (gap < 28 && (!best || gap < best.gap)) best = { left, gap }
+      for (let j = i + 1; j < sequenced.length; j++) {
+        if (sequenced[j].note.string !== sequenced[i].note.string) continue
+        const between = sequenced.slice(i + 1, j).some(s => s.note.string === sequenced[i].note.string)
+        if (between) continue
+        const left = sequenced[i]
+        const right = sequenced[j]
+        const gap = right.x - left.x
+        if (gap <= 0 || gap > 70) continue
+        if (mark.x < left.x - 4 || mark.x > right.x + 6) continue
+        const inside = mark.x >= left.x - 1 && mark.x <= right.x + 1
+        const score = (inside ? 0 : 30) + gap + Math.abs(mark.x - (left.x + right.x) / 2) * 0.15
+        if (!best || score < best.score) best = { left, score }
       }
+    }
+    if (!best && mark.kind === 'sl') {
+      const left = [...sequenced].reverse().find(n => n.x <= mark.x + 4)
+      if (left && mark.x - left.x < 26) best = { left, score: 0 }
     }
     if (!best) continue
     if (mark.kind === 'h') best.left.note.hammer = true
@@ -696,10 +954,19 @@ export async function parseGuitarProPdf(data: ArrayBuffer, filename?: string): P
   }
   const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(data) }).promise
   const allItems: TextItem[] = []
-  const pageSystems: Array<{ system: System; bars: number[]; items: TextItem[]; beams: HSeg[] }> = []
+  const pageSystems: Array<{
+    system: System
+    bars: number[]
+    items: TextItem[]
+    beams: Beam[]
+    stems: VSeg[]
+    curves: Curve[]
+    dots: Dot[]
+  }> = []
 
   for (let p = 1; p <= pdf.numPages; p++) {
     const page = await pdf.getPage(p)
+    const pageH = page.view[3] - page.view[1]
     const textContent = await page.getTextContent()
     const items: TextItem[] = []
     for (const raw of textContent.items) {
@@ -715,12 +982,21 @@ export async function parseGuitarProPdf(data: ArrayBuffer, filename?: string): P
     allItems.push(...items)
     const op = await page.getOperatorList()
     const geo = extractGeometry(op)
-    const lines = clusterY(geo.horiz)
+    const beams = pairBeamEdges(geo.beamEdges)
+    const lines = clusterY(geo.horiz, pageH)
     const staves = findStaves(lines)
     const sys = pairSystems(staves)
     for (const system of sys) {
-      const bars = barlineXs(geo.vert, system.tab)
-      pageSystems.push({ system, bars, items, beams: geo.horiz })
+      const bars = barlineXs(geo.vert, system.notation, system.tab)
+      pageSystems.push({
+        system,
+        bars,
+        items,
+        beams,
+        stems: geo.vert,
+        curves: geo.curves,
+        dots: geo.dots,
+      })
     }
   }
 
@@ -732,11 +1008,22 @@ export async function parseGuitarProPdf(data: ArrayBuffer, filename?: string): P
   const measures: GpMeasure[] = []
 
   for (const ps of pageSystems) {
+    const top = ps.system.notation.lines[0]
     for (let i = 0; i < ps.bars.length - 1; i++) {
       const x1 = ps.bars[i]
       const x2 = ps.bars[i + 1]
-      if (x2 - x1 < 12) continue
-      measures.push(buildMeasure(ps.items, ps.beams, ps.system, x1, x2, ts))
+      if (x2 - x1 < 8) continue
+      const measure = buildMeasure(ps.items, ps.beams, ps.stems, ps.curves, ps.dots, ps.system, x1, x2, ts)
+      const printed = ps.items
+        .filter(it => {
+          if (!/^\d{1,3}$/.test(it.str.trim())) return false
+          if (it.y <= top - 1 || it.y >= top + 28) return false
+          // 小節番号は小節の左端（小節線のすぐ右、たまに少し左）に付く
+          return it.x >= x1 - 8 && it.x < x1 + (x2 - x1) * 0.45
+        })
+        .sort((a, b) => a.x - b.x)[0]
+      if (printed) measure.number = parseInt(printed.str, 10)
+      measures.push(measure)
     }
   }
 

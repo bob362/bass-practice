@@ -14,6 +14,7 @@ export interface TabNote {
   dead?: boolean
   hammer?: boolean
   slide?: boolean
+  tie?: boolean
 }
 
 export interface TabMeasure {

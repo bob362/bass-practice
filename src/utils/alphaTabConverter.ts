@@ -97,6 +97,7 @@ function formatNote(note: TabNote): string {
   const fx: string[] = []
   if (note.hammer) fx.push('h')
   if (note.slide) fx.push('sl')
+  if (note.tie) fx.push('t')
   return fx.length ? `${base}{${fx.join(' ')}}` : base
 }
 

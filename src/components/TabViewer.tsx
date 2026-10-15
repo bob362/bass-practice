@@ -52,6 +52,9 @@ function tickToBar(api: any, tick: number): number | null {
   return index + 1
 }
 
+/** CDNから読み込むalphaTabのバージョン（package.jsonと揃える。@latestは使わない） */
+const ALPHATAB_VERSION = '1.8.4'
+
 /** 曲データ（URL・alphaTex文字列・バイナリ）をalphaTabに読み込む */
 function loadSource(api: any, source: string | ArrayBuffer) {
   if (typeof source === 'string') {
@@ -62,7 +65,9 @@ function loadSource(api: any, source: string | ArrayBuffer) {
       api.tex(source)
     }
   } else {
-    api.load(source)
+    // alphaTabはバッファをワーカーへ転送（detach）することがあるため、毎回コピーを渡す。
+    // StrictModeの再マウントや「原曲に戻す」で同じArrayBufferを再利用しても読み込めるようにする。
+    api.load(new Uint8Array(source.slice(0)))
   }
 }
 
@@ -192,7 +197,7 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
       // alphaTabのCDNからロード
       if (!window.alphaTab) {
         const script = document.createElement('script')
-        script.src = 'https://cdn.jsdelivr.net/npm/@coderline/alphatab@latest/dist/alphaTab.js'
+        script.src = `https://cdn.jsdelivr.net/npm/@coderline/alphatab@${ALPHATAB_VERSION}/dist/alphaTab.js`
         script.async = true
         
         await new Promise<void>((resolve) => {
@@ -200,11 +205,6 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
           document.head.appendChild(script)
         })
 
-        // CSSもロード
-        const link = document.createElement('link')
-        link.rel = 'stylesheet'
-        link.href = 'https://cdn.jsdelivr.net/npm/@coderline/alphatab@latest/dist/alphaTab.css'
-        document.head.appendChild(link)
       }
 
       if (cancelled || !viewerRef.current) return
@@ -213,7 +213,7 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
       const api = new window.alphaTab.AlphaTabApi(viewerRef.current, {
         core: {
           logLevel: 1,
-          fontDirectory: 'https://cdn.jsdelivr.net/npm/@coderline/alphatab@latest/dist/font/',
+          fontDirectory: `https://cdn.jsdelivr.net/npm/@coderline/alphatab@${ALPHATAB_VERSION}/dist/font/`,
           enableLazyLoading: false,
         },
         display: {
@@ -243,7 +243,7 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
           enablePlayer: true,
           enableCursor: true,
           enableUserInteraction: true,
-          soundFont: 'https://cdn.jsdelivr.net/npm/@coderline/alphatab@latest/dist/soundfont/sonivox.sf2',
+          soundFont: `https://cdn.jsdelivr.net/npm/@coderline/alphatab@${ALPHATAB_VERSION}/dist/soundfont/sonivox.sf2`,
           scrollElement: viewerRef.current,
         }
       })

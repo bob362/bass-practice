@@ -28,9 +28,13 @@ export default function TabViewer({ filePath, pdfData, onFileImport }: TabViewer
   const [loopEnd, setLoopEnd] = useState<number | null>(null)
   const [isLooping, setIsLooping] = useState(false)
   const [showPdf, setShowPdf] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!viewerRef.current) return
+
+    setIsReady(false)
+    setLoadError(null)
 
     const loadAlphaTab = async () => {
       // alphaTabのCDNからロード
@@ -88,13 +92,19 @@ export default function TabViewer({ filePath, pdfData, onFileImport }: TabViewer
           enableCursor: true,
           enableUserInteraction: true,
           soundFont: 'https://cdn.jsdelivr.net/npm/@coderline/alphatab@latest/dist/soundfont/sonivox.sf2',
-          scrollElement: viewerRef.current.querySelector('.at-viewport'),
+          scrollElement: viewerRef.current,
         }
       })
 
       // イベントリスナーの設定
       api.renderFinished.on(() => {
+        setLoadError(null)
         setIsReady(true)
+      })
+
+      api.error.on((e: { message?: string }) => {
+        setLoadError(e?.message || 'タブ譜を表示できませんでした')
+        setIsReady(false)
       })
 
       api.playerStateChanged.on((e: any) => {
@@ -212,10 +222,12 @@ export default function TabViewer({ filePath, pdfData, onFileImport }: TabViewer
 
   return (
     <>
-      <div className="tab-container" style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+      <div className="tab-container" style={{ display: 'flex', flexDirection: 'row', flex: 1, overflow: 'hidden', minHeight: 0 }}>
         {showPdf && pdfData && (
           <div style={{
             width: '400px',
+            flex: '0 0 400px',
+            alignSelf: 'stretch',
             background: '#2a2a2a',
             borderRight: '1px solid #3a3a3a',
             padding: '1rem',
@@ -235,10 +247,13 @@ export default function TabViewer({ filePath, pdfData, onFileImport }: TabViewer
             />
           </div>
         )}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <div ref={viewerRef} className="at-viewport">
-            {!isReady && <div className="loading">タブを読み込み中...</div>}
-          </div>
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
+          <div ref={viewerRef} className="at-viewport" />
+          {(loadError || !isReady) && (
+            <div className="loading" style={{ position: 'absolute', inset: 0, background: '#1e1e1e' }}>
+              {loadError ? `タブを表示できません: ${loadError}` : 'タブを読み込み中...'}
+            </div>
+          )}
         </div>
       </div>
       <div className="controls-panel">

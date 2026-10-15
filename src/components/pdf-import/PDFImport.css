@@ -60,10 +60,16 @@
 
 .pdf-preview {
   flex: 1;
-  background: #2a2a2a;
+  background: #1a1a1a;
   border-radius: 8px;
   padding: 1rem;
   overflow: auto;
+  min-width: 280px;
+  max-height: calc(100vh - 180px);
+}
+
+.pdf-preview canvas {
+  background: #fff;
 }
 
 .pdf-preview canvas {
@@ -120,6 +126,7 @@
 .measures-editor {
   flex: 1;
   overflow-y: auto;
+  max-height: calc(100vh - 380px);
 }
 
 .measure-item {

@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/TabViewer.tsx","./src/components/pdf-import/PDFImport.tsx","./src/utils/alphaTabConverter.ts","./src/utils/ocrParser.ts","./src/utils/pdfParser.ts","./src/utils/storage.ts"],"version":"5.6.3"}
+{"root":["./src/App.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/TabViewer.tsx","./src/components/pdf-import/PDFImport.tsx","./src/utils/alphaTabConverter.ts","./src/utils/gpPdfParser.ts","./src/utils/ocrParser.ts","./src/utils/pdfParser.ts","./src/utils/storage.ts"],"version":"5.6.3"}

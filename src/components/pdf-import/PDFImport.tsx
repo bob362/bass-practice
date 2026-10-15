@@ -24,7 +24,7 @@ export default function PDFImport({ onSongSelected }: PDFImportProps) {
   const [_pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null)
   const [savedSongs, setSavedSongs] = useState<ConvertedSong[]>([])
   const [dragOver, setDragOver] = useState(false)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const previewRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -47,13 +47,8 @@ export default function PDFImport({ onSongSelected }: PDFImportProps) {
     setProgress(0)
 
     try {
-      // PDFプレビュー用のURLを生成
       const previewUrl = URL.createObjectURL(file)
       setPdfPreviewUrl(previewUrl)
-      
-      // canvasがマウントされるまで少し待つ
-      await new Promise(resolve => setTimeout(resolve, 100))
-      await renderPDFPreview(file)
 
       // スキャンPDFかテキストPDFかを判定
       const scanned = await isPDFScanned(file)
@@ -86,38 +81,44 @@ export default function PDFImport({ onSongSelected }: PDFImportProps) {
     }
   }
 
-  const renderPDFPreview = async (file: File) => {
-    if (!canvasRef.current) {
-      console.warn('Canvas not ready for PDF preview')
-      return
-    }
+  useEffect(() => {
+    if (stage !== 'review' || !currentFile || !previewRef.current) return
+    const file = currentFile
+    const host = previewRef.current
+    let cancelled = false
 
-    try {
-      const arrayBuffer = await file.arrayBuffer()
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
-      const page = await pdf.getPage(1)
-      const viewport = page.getViewport({ scale: 1.5 })
-
-      const canvas = canvasRef.current
-      const context = canvas.getContext('2d')
-      if (!context) {
-        console.error('Could not get canvas context')
-        return
+    ;(async () => {
+      try {
+        const data = new Uint8Array(await file.arrayBuffer())
+        const pdf = await pdfjsLib.getDocument({ data }).promise
+        if (cancelled || !previewRef.current) return
+        host.replaceChildren()
+        for (let i = 1; i <= pdf.numPages; i++) {
+          if (cancelled) return
+          const page = await pdf.getPage(i)
+          const viewport = page.getViewport({ scale: 1.2 })
+          const canvas = document.createElement('canvas')
+          canvas.width = viewport.width
+          canvas.height = viewport.height
+          canvas.style.width = '100%'
+          canvas.style.height = 'auto'
+          canvas.style.display = 'block'
+          canvas.style.marginBottom = '12px'
+          canvas.style.background = '#fff'
+          host.appendChild(canvas)
+          const context = canvas.getContext('2d')
+          if (!context) continue
+          await page.render({ canvasContext: context, viewport }).promise
+        }
+      } catch (error) {
+        console.error('PDF preview rendering error:', error)
       }
-      
-      canvas.width = viewport.width
-      canvas.height = viewport.height
+    })()
 
-      await page.render({
-        canvasContext: context,
-        viewport: viewport,
-      }).promise
-      
-      console.log('PDF preview rendered successfully')
-    } catch (error) {
-      console.error('PDF preview rendering error:', error)
+    return () => {
+      cancelled = true
     }
-  }
+  }, [stage, currentFile])
 
   const handleSave = async () => {
     if (!editableScore || !currentFile) return
@@ -319,8 +320,8 @@ export default function PDFImport({ onSongSelected }: PDFImportProps) {
           </div>
           <div className="review-container">
             <div className="pdf-preview">
-              <h3 style={{ marginBottom: '1rem' }}>元のPDF（1ページ目）</h3>
-              <canvas ref={canvasRef} />
+              <h3 style={{ marginBottom: '1rem' }}>元のPDF</h3>
+              <div ref={previewRef} />
             </div>
             <div className="tab-editor">
               <h3>タブ譜データ</h3>
@@ -344,6 +345,14 @@ export default function PDFImport({ onSongSelected }: PDFImportProps) {
                   />
                 </div>
                 <div className="form-group">
+                  <label>チューニング（低い弦から）</label>
+                  <input
+                    type="text"
+                    value={editableScore.metadata.tuning || 'E1 A1 D2 G2'}
+                    onChange={(e) => handleMetadataChange('tuning', e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
                   <label>テンポ (BPM)</label>
                   <input
                     type="number"
@@ -354,7 +363,7 @@ export default function PDFImport({ onSongSelected }: PDFImportProps) {
                   />
                 </div>
               </div>
-              <h4 style={{ marginBottom: '0.75rem' }}>小節（フレット.弦番号）</h4>
+              <h4 style={{ marginBottom: '0.75rem' }}>小節（1が一番低い弦。:8 は8分音符、{'{d}'} は付点、{'{h}'} ハンマリング、{'{sl}'} スライド、x はデッドノート）</h4>
               <div className="measures-editor">
                 {editableScore.measures.map((measure, index) => (
                   <div key={index} className="measure-item">

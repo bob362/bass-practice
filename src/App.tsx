@@ -4,6 +4,7 @@ import TabViewer from './components/TabViewer'
 import PDFImport from './components/pdf-import/PDFImport'
 import Dashboard from './components/Dashboard'
 import type { ConvertedSong } from './utils/storage'
+import { base64ToArrayBuffer } from './utils/guitarPro'
 
 type View = 'practice' | 'dashboard' | 'import'
 
@@ -31,7 +32,7 @@ function App() {
 
   const handleSongSelected = (song: ConvertedSong) => {
     // texDataを直接渡す（alphaTabはtexフォーマットの文字列を直接処理できる）
-    setCurrentFile(song.texData)
+    setCurrentFile(song.gpData ? base64ToArrayBuffer(song.gpData) : song.texData)
     setCurrentPdf(song.pdfData || null)
     setCurrentSongId(song.id)
     setView('practice')

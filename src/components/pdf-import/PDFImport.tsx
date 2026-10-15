@@ -4,6 +4,9 @@ import { parseTextPDF } from '../../utils/pdfParser'
 import { parseScannedPDF, isPDFScanned } from '../../utils/ocrParser'
 import { convertToAlphaTab, texToEditable, editableToTex, EditableScore } from '../../utils/alphaTabConverter'
 import { saveSong, getAllSongs, ConvertedSong, deleteSong, pdfToBase64 } from '../../utils/storage'
+import {
+  GUITAR_PRO_ACCEPT, MAX_GUITAR_PRO_BYTES, bytesToBase64, guitarProFormatFromName, looksLikeGuitarPro, titleFromFileName,
+} from '../../utils/guitarPro'
 import './PDFImport.css'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs`
@@ -35,9 +38,40 @@ export default function PDFImport({ onSongSelected }: PDFImportProps) {
     setSavedSongs(getAllSongs())
   }
 
+  const handleGuitarProFile = async (file: File) => {
+    const format = guitarProFormatFromName(file.name)
+    if (!format) return
+    if (file.size > MAX_GUITAR_PRO_BYTES) {
+      setError(`ファイルが大きすぎます（${(file.size / 1024 / 1024).toFixed(1)}MB）。ブラウザ保存のため${MAX_GUITAR_PRO_BYTES / 1024 / 1024}MBまでです`)
+      return
+    }
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      if (!looksLikeGuitarPro(bytes)) {
+        setError('Guitar Proファイルとして認識できませんでした')
+        return
+      }
+      const song = saveSong({ title: titleFromFileName(file.name), texData: '', gpData: bytesToBase64(bytes), gpFormat: format })
+      setError(null)
+      loadSavedSongs()
+      setStage('saved-list')
+      onSongSelected(song)
+    } catch (err) {
+      console.error('Guitar Pro保存エラー:', err)
+      const quota = err instanceof DOMException && err.name === 'QuotaExceededError'
+      setError(quota
+        ? 'ブラウザの保存容量が足りません。不要な曲を削除してから再度お試しください'
+        : `Guitar Proファイルの読み込みに失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`)
+    }
+  }
+
   const handleFileSelect = async (file: File) => {
+    if (guitarProFormatFromName(file.name)) {
+      await handleGuitarProFile(file)
+      return
+    }
     if (!file.type.includes('pdf')) {
-      setError('PDFファイルを選択してください')
+      setError('PDFまたはGuitar Pro（.gp/.gp3/.gp4/.gp5/.gpx）ファイルを選択してください')
       return
     }
 
@@ -243,14 +277,14 @@ export default function PDFImport({ onSongSelected }: PDFImportProps) {
             onClick={() => setStage('upload')}
             style={{ marginTop: '1.5rem' }}
           >
-            + 新しいPDFをインポート
+            + 新しい曲をインポート（PDF / Guitar Pro）
           </button>
         </>
       )}
 
       {stage === 'upload' && (
         <>
-          <h2>PDFタブ譜のインポート</h2>
+          <h2>タブ譜のインポート（PDF / Guitar Pro）</h2>
           <div
             className={`upload-section ${dragOver ? 'drag-over' : ''}`}
             onDragOver={handleDragOver}
@@ -263,16 +297,16 @@ export default function PDFImport({ onSongSelected }: PDFImportProps) {
             >
               <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>📄</div>
               <p style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>
-                PDFファイルをドロップまたはクリックして選択
+                PDF / Guitar Proファイルをドロップまたはクリックして選択
               </p>
               <p style={{ fontSize: '0.875rem', color: '#888' }}>
-                テキストベースPDFまたはスキャン画像PDFに対応
+                テキストPDF・スキャンPDF・Guitar Pro（.gp, .gp3, .gp4, .gp5, .gpx）に対応
               </p>
             </div>
             <input
               ref={fileInputRef}
               type="file"
-              accept=".pdf"
+              accept={`.pdf,${GUITAR_PRO_ACCEPT}`}
               onChange={(e) => e.target.files?.[0] && handleFileSelect(e.target.files[0])}
               style={{ display: 'none' }}
             />
@@ -282,6 +316,7 @@ export default function PDFImport({ onSongSelected }: PDFImportProps) {
             <ul style={{ marginTop: '0.5rem', marginLeft: '1.5rem' }}>
               <li><strong>テキストベースPDF:</strong> 最も精度が高い。文字情報を含むPDF。</li>
               <li><strong>スキャン画像PDF:</strong> OCRで認識（精度は中程度）。レビュー画面で修正可能。</li>
+              <li><strong>Guitar Pro:</strong> .gp（GP7/8）・.gpx（GP6）・.gp3/.gp4/.gp5 をそのまま保存して読み込み（2MBまで）。</li>
             </ul>
           </div>
           <button

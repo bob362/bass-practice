@@ -644,7 +644,7 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
             </label>
           </div>
           <div className="info-text">
-            対応形式: Guitar Pro (.gp, .gp5, .gpx), MusicXML (.musicxml, .xml)
+            対応形式: Guitar Pro (.gp, .gp3, .gp4, .gp5, .gpx), MusicXML (.musicxml, .xml)
           </div>
         </div>
 

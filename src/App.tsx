@@ -2,13 +2,16 @@ import { useState } from 'react'
 import './App.css'
 import TabViewer from './components/TabViewer'
 import PDFImport from './components/pdf-import/PDFImport'
+import Dashboard from './components/Dashboard'
+import type { ConvertedSong } from './utils/storage'
 
-type View = 'practice' | 'import'
+type View = 'practice' | 'dashboard' | 'import'
 
 function App() {
   const [view, setView] = useState<View>('import')
   const [currentFile, setCurrentFile] = useState<string | ArrayBuffer>('/sample-bass.tex')
   const [currentPdf, setCurrentPdf] = useState<string | null>(null)
+  const [currentSongId, setCurrentSongId] = useState<string | null>(null)
 
   const handleFileImport = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -19,16 +22,18 @@ function App() {
         if (arrayBuffer) {
           setCurrentFile(arrayBuffer as any)
           setCurrentPdf(null)
+          setCurrentSongId(null)
         }
       }
       reader.readAsArrayBuffer(file)
     }
   }
 
-  const handleSongSelected = (texData: string, pdfData?: string) => {
+  const handleSongSelected = (song: ConvertedSong) => {
     // texDataを直接渡す（alphaTabはtexフォーマットの文字列を直接処理できる）
-    setCurrentFile(texData)
-    setCurrentPdf(pdfData || null)
+    setCurrentFile(song.texData)
+    setCurrentPdf(song.pdfData || null)
+    setCurrentSongId(song.id)
     setView('practice')
   }
 
@@ -44,6 +49,12 @@ function App() {
             練習
           </button>
           <button 
+            className={`nav-button ${view === 'dashboard' ? 'active' : ''}`}
+            onClick={() => setView('dashboard')}
+          >
+            ダッシュボード
+          </button>
+          <button 
             className={`nav-button ${view === 'import' ? 'active' : ''}`}
             onClick={() => setView('import')}
           >
@@ -56,8 +67,13 @@ function App() {
           <TabViewer 
             filePath={currentFile}
             pdfData={currentPdf}
+            songId={currentSongId}
             onFileImport={handleFileImport}
           />
+        ) : view === 'dashboard' ? (
+          <div style={{ flex: 1, overflow: 'auto', background: '#1a1a1a' }}>
+            <Dashboard onOpenSong={handleSongSelected} />
+          </div>
         ) : (
           <div style={{ flex: 1, overflow: 'auto', background: '#1a1a1a' }}>
             <PDFImport onSongSelected={handleSongSelected} />

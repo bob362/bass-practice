@@ -1,6 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
 import { base64ToPdfBlob } from '../utils/storage'
+import { listSections, updateSectionTempo, upsertSection } from '../utils/progress'
+import type { PracticeSection } from '../utils/progress'
+import { usePracticeTimer } from '../hooks/usePracticeTimer'
+import YouTubePanel from './YouTubePanel'
+import type { PositionListener } from './YouTubePanel'
+import SectionPanel from './SectionPanel'
+import type { BarRange } from './SectionPanel'
 
 // alphaTabのグローバルインポート
 declare global {
@@ -14,10 +21,40 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dis
 interface TabViewerProps {
   filePath: string | ArrayBuffer
   pdfData?: string | null
+  /** 保存済みの曲を開いている場合のID（進捗・動画設定の保存先） */
+  songId?: string | null
   onFileImport: (event: React.ChangeEvent<HTMLInputElement>) => void
 }
 
-export default function TabViewer({ filePath, pdfData, onFileImport }: TabViewerProps) {
+/** ループ1周を「通し」とみなすA地点からのずれの許容量（tick） */
+const PASS_START_TOLERANCE_TICKS = 480
+
+function formatElapsed(sec: number): string {
+  const total = Math.floor(sec)
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
+}
+
+/** tickを含む小節番号（1始まり） */
+function tickToBar(api: any, tick: number): number | null {
+  const bars: any[] | undefined = api?.score?.masterBars
+  if (!bars?.length) return null
+  let index = 0
+  for (let i = 0; i < bars.length; i++) {
+    if (bars[i].start <= tick) index = i
+    else break
+  }
+  return index + 1
+}
+
+function barToTicks(api: any, startBar: number, endBar: number): { start: number; end: number } | null {
+  const bars: any[] | undefined = api?.score?.masterBars
+  if (!bars?.length) return null
+  const first = bars[Math.min(startBar, bars.length) - 1]
+  const last = bars[Math.min(endBar, bars.length) - 1]
+  return { start: first.start, end: last.start + last.calculateDuration() }
+}
+
+export default function TabViewer({ filePath, pdfData, songId = null, onFileImport }: TabViewerProps) {
   const viewerRef = useRef<HTMLDivElement>(null)
   const apiRef = useRef<any>(null)
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -29,12 +66,90 @@ export default function TabViewer({ filePath, pdfData, onFileImport }: TabViewer
   const [isLooping, setIsLooping] = useState(false)
   const [showPdf, setShowPdf] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [barCount, setBarCount] = useState(0)
+  const [sections, setSections] = useState<PracticeSection[]>([])
+  const [activeSectionId, setActiveSectionId] = useState<string | null>(null)
+
+  const timer = usePracticeTimer(songId, isPlaying)
+
+  // alphaTabのイベントハンドラは読み込み時に一度だけ登録されるため、最新値はrefで参照する
+  const loopRef = useRef({ loopStart, loopEnd, isLooping })
+  loopRef.current = { loopStart, loopEnd, isLooping }
+  const tempoRef = useRef(tempo)
+  tempoRef.current = tempo
+  const songIdRef = useRef(songId)
+  songIdRef.current = songId
+  const sectionsRef = useRef(sections)
+  sectionsRef.current = sections
+  const activeSectionRef = useRef(activeSectionId)
+  activeSectionRef.current = activeSectionId
+  /** 現在のループ周回の開始tickと、その周回中の最低テンポ */
+  const passRef = useRef<{ startTick: number; minTempo: number } | null>(null)
+  const positionListeners = useRef(new Set<PositionListener>())
+
+  const refreshSections = useCallback(() => {
+    setSections(songId ? listSections(songId) : [])
+  }, [songId])
+
+  useEffect(() => {
+    refreshSections()
+    setActiveSectionId(null)
+  }, [refreshSections])
+
+  const subscribePosition = useCallback((listener: PositionListener) => {
+    positionListeners.current.add(listener)
+    return () => { positionListeners.current.delete(listener) }
+  }, [])
+
+  /** 100%テンポ基準の譜面位置（秒）。alphaTabのtimePositionは再生速度で伸縮済み */
+  const getTabSec = useCallback(() => {
+    const api = apiRef.current
+    if (!api) return 0
+    return (api.timePosition ?? 0) * (api.playbackSpeed ?? 1) / 1000
+  }, [])
+
+  const startPass = (startTick: number) => {
+    passRef.current = { startTick, minTempo: tempoRef.current }
+  }
+
+  /** ループが1周したとき、該当セクションの最高テンポを更新する */
+  const recordLoopPass = () => {
+    const api = apiRef.current
+    const id = songIdRef.current
+    const pass = passRef.current
+    const { loopStart: start, loopEnd: end } = loopRef.current
+    if (!api || !id || !pass || start === null || end === null) return
+    if (pass.startTick > start + PASS_START_TOLERANCE_TICKS) return
+    const startBar = tickToBar(api, start)
+    const endBar = tickToBar(api, Math.max(start, end - 1))
+    const targets = sectionsRef.current.filter(s =>
+      s.id === activeSectionRef.current || (s.startBar === startBar && s.endBar === endBar))
+    if (!targets.length) return
+    try {
+      for (const section of targets) {
+        const updated = updateSectionTempo(id, section.id, pass.minTempo)
+        if (updated && updated.status === 'not_started') upsertSection({ ...updated, status: 'practicing' })
+      }
+      setSections(listSections(id))
+    } catch (error) {
+      console.error('Failed to update section tempo:', error)
+    }
+  }
+  const recordLoopPassRef = useRef(recordLoopPass)
+  recordLoopPassRef.current = recordLoopPass
 
   useEffect(() => {
     if (!viewerRef.current) return
 
     setIsReady(false)
     setLoadError(null)
+    setLoopStart(null)
+    setLoopEnd(null)
+    setIsLooping(false)
+    setBarCount(0)
+
+    // StrictModeの二重実行などでスクリプト読み込み中にアンマウントされた場合、APIを生成しない
+    let cancelled = false
 
     const loadAlphaTab = async () => {
       // alphaTabのCDNからロード
@@ -55,7 +170,7 @@ export default function TabViewer({ filePath, pdfData, onFileImport }: TabViewer
         document.head.appendChild(link)
       }
 
-      if (!viewerRef.current) return
+      if (cancelled || !viewerRef.current) return
 
       // alphaTab APIの初期化
       const api = new window.alphaTab.AlphaTabApi(viewerRef.current, {
@@ -99,6 +214,7 @@ export default function TabViewer({ filePath, pdfData, onFileImport }: TabViewer
       // イベントリスナーの設定
       api.renderFinished.on(() => {
         setLoadError(null)
+        setBarCount(api.score?.masterBars?.length ?? 0)
         setIsReady(true)
       })
 
@@ -107,15 +223,39 @@ export default function TabViewer({ filePath, pdfData, onFileImport }: TabViewer
         setIsReady(false)
       })
 
+      const wrapLoop = () => {
+        const { loopStart } = loopRef.current
+        recordLoopPassRef.current()
+        api.tickPosition = loopStart || 0
+        startPass(loopStart || 0)
+      }
+
       api.playerStateChanged.on((e: any) => {
-        setIsPlaying(e.state === 1) // 1 = playing
+        const playing = e.state === 1 // 1 = playing
+        setIsPlaying(playing)
+        if (playing) startPass(api.tickPosition)
       })
 
-      api.playerPositionChanged.on(() => {
-        // A-Bループのチェック
-        if (isLooping && loopEnd !== null && api.tickPosition >= loopEnd) {
-          api.tickPosition = loopStart || 0
+      api.playerFinished?.on(() => {
+        // 最終小節までのループは終端に達すると停止するので、先頭に戻して再開する
+        const { isLooping, loopEnd } = loopRef.current
+        if (isLooping && loopEnd !== null) {
+          wrapLoop()
+          api.play()
         }
+      })
+
+      api.playerPositionChanged.on((e: any) => {
+        // A-Bループのチェック
+        const { isLooping, loopEnd } = loopRef.current
+        if (isLooping && loopEnd !== null && api.tickPosition >= loopEnd) {
+          wrapLoop()
+        } else if (e?.isSeek) {
+          startPass(api.tickPosition)
+        }
+        if (passRef.current) passRef.current.minTempo = Math.min(passRef.current.minTempo, tempoRef.current)
+        const tabSec = (e?.currentTime ?? api.timePosition ?? 0) * (api.playbackSpeed ?? 1) / 1000
+        positionListeners.current.forEach(listener => listener(tabSec, !!e?.isSeek))
       })
 
       apiRef.current = api
@@ -139,8 +279,10 @@ export default function TabViewer({ filePath, pdfData, onFileImport }: TabViewer
     loadAlphaTab()
 
     return () => {
+      cancelled = true
       if (apiRef.current) {
         apiRef.current.destroy()
+        apiRef.current = null
       }
     }
   }, [filePath])
@@ -201,17 +343,20 @@ export default function TabViewer({ filePath, pdfData, onFileImport }: TabViewer
   const handleSetLoopStart = () => {
     if (!apiRef.current) return
     setLoopStart(apiRef.current.tickPosition)
+    setActiveSectionId(null)
   }
 
   const handleSetLoopEnd = () => {
     if (!apiRef.current) return
     setLoopEnd(apiRef.current.tickPosition)
+    setActiveSectionId(null)
   }
 
   const handleClearLoop = () => {
     setLoopStart(null)
     setLoopEnd(null)
     setIsLooping(false)
+    setActiveSectionId(null)
   }
 
   const handleToggleLoop = () => {
@@ -219,6 +364,25 @@ export default function TabViewer({ filePath, pdfData, onFileImport }: TabViewer
       setIsLooping(!isLooping)
     }
   }
+
+  const handleLoopSection = (section: PracticeSection) => {
+    const api = apiRef.current
+    const ticks = barToTicks(api, section.startBar, section.endBar)
+    if (!api || !ticks) return
+    setLoopStart(ticks.start)
+    setLoopEnd(ticks.end)
+    setIsLooping(true)
+    setActiveSectionId(section.id)
+    api.tickPosition = ticks.start
+    startPass(ticks.start)
+  }
+
+  const loopStartBar = isReady && loopStart !== null ? tickToBar(apiRef.current, loopStart) : null
+  const loopEndBar = isReady && loopEnd !== null ? tickToBar(apiRef.current, Math.max(loopStart ?? 0, loopEnd - 1)) : null
+  const loopRange = useMemo<BarRange | null>(() => {
+    if (loopStartBar === null || loopEndBar === null || loopEndBar < loopStartBar) return null
+    return { startBar: loopStartBar, endBar: loopEndBar }
+  }, [loopStartBar, loopEndBar])
 
   return (
     <>
@@ -247,7 +411,7 @@ export default function TabViewer({ filePath, pdfData, onFileImport }: TabViewer
             />
           </div>
         )}
-        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
+        <div className="tab-viewer-pane" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
           <div ref={viewerRef} className="at-viewport" />
           {(loadError || !isReady) && (
             <div className="loading" style={{ position: 'absolute', inset: 0, background: '#1e1e1e' }}>
@@ -255,6 +419,13 @@ export default function TabViewer({ filePath, pdfData, onFileImport }: TabViewer
             </div>
           )}
         </div>
+        <YouTubePanel
+          songId={songId}
+          isTabPlaying={isPlaying}
+          tempoPercent={tempo}
+          getTabSec={getTabSec}
+          subscribePosition={subscribePosition}
+        />
       </div>
       <div className="controls-panel">
         <div className="control-group">
@@ -273,6 +444,12 @@ export default function TabViewer({ filePath, pdfData, onFileImport }: TabViewer
           >
             ⏹ 停止
           </button>
+          {songId && (
+            <div className={`practice-timer ${timer.isActive ? 'active' : ''}`}>
+              <span>⏱ 今回の練習</span>
+              <span>{formatElapsed(timer.elapsedSec)}</span>
+            </div>
+          )}
         </div>
 
         <div className="control-group">
@@ -312,10 +489,10 @@ export default function TabViewer({ filePath, pdfData, onFileImport }: TabViewer
           </button>
           <div className="loop-points">
             <div className={`loop-point ${loopStart !== null ? 'active' : ''}`}>
-              A: {loopStart !== null ? '設定済み' : '未設定'}
+              A: {loopStart !== null ? (loopStartBar !== null ? `${loopStartBar}小節` : '設定済み') : '未設定'}
             </div>
             <div className={`loop-point ${loopEnd !== null ? 'active' : ''}`}>
-              B: {loopEnd !== null ? '設定済み' : '未設定'}
+              B: {loopEnd !== null ? (loopEndBar !== null ? `${loopEndBar}小節` : '設定済み') : '未設定'}
             </div>
           </div>
           <button 
@@ -335,6 +512,19 @@ export default function TabViewer({ filePath, pdfData, onFileImport }: TabViewer
           <div className="info-text">
             再生中の任意の位置でA地点・B地点を設定し、その区間を繰り返し練習できます。
           </div>
+        </div>
+
+        <div className="control-group">
+          <h3>セクション</h3>
+          <SectionPanel
+            songId={songId}
+            sections={sections}
+            loopRange={loopRange}
+            barCount={barCount}
+            activeSectionId={activeSectionId}
+            onChanged={refreshSections}
+            onLoopSection={handleLoopSection}
+          />
         </div>
 
         <div className="control-group">

@@ -863,3 +863,19 @@
     width: 100%;
   }
 }
+
+/* ===== alphaTab カーソル（alphaTab 1.8 は CSS を同梱しないため自前で定義） ===== */
+.at-cursor-bar {
+  background: rgba(74, 158, 255, 0.12);
+}
+.at-cursor-beat {
+  background: rgba(74, 158, 255, 0.85);
+  width: 3px;
+}
+.at-selection div {
+  background: rgba(74, 158, 255, 0.2);
+}
+.at-highlight * {
+  fill: #4a9eff;
+  stroke: #4a9eff;
+}

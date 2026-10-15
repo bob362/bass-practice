@@ -9,7 +9,7 @@ import './PDFImport.css'
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs`
 
 interface PDFImportProps {
-  onSongSelected: (texData: string, pdfData?: string) => void
+  onSongSelected: (song: ConvertedSong) => void
 }
 
 type Stage = 'upload' | 'processing' | 'review' | 'saved-list'
@@ -174,7 +174,7 @@ export default function PDFImport({ onSongSelected }: PDFImportProps) {
   }
 
   const handleSongSelect = (song: ConvertedSong) => {
-    onSongSelected(song.texData, song.pdfData)
+    onSongSelected(song)
   }
 
   const handleDeleteSong = (id: string, e: React.MouseEvent) => {

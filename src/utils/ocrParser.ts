@@ -1,8 +1,9 @@
 import Tesseract from 'tesseract.js'
 import * as pdfjsLib from 'pdfjs-dist'
+import { configurePdfjsWorker, pdfDocumentParams } from './pdfjsConfig'
 import { TabNote, TabMeasure, ParsedTab } from './pdfParser'
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs`
+configurePdfjsWorker()
 
 /**
  * スキャンされたPDFからOCRでタブ譜を抽出
@@ -12,7 +13,7 @@ export async function parseScannedPDF(
   onProgress?: (progress: number) => void
 ): Promise<ParsedTab> {
   const arrayBuffer = await file.arrayBuffer()
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+  const pdf = await pdfjsLib.getDocument(pdfDocumentParams(arrayBuffer)).promise
   
   const allMeasures: TabMeasure[] = []
   let title: string | undefined
@@ -208,7 +209,7 @@ function createDefaultMeasure(): TabMeasure {
  */
 export async function isPDFScanned(file: File): Promise<boolean> {
   const arrayBuffer = await file.arrayBuffer()
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+  const pdf = await pdfjsLib.getDocument(pdfDocumentParams(arrayBuffer)).promise
   
   // 最初のページをチェック
   const page = await pdf.getPage(1)

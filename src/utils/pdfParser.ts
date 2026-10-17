@@ -1,8 +1,9 @@
 import * as pdfjsLib from 'pdfjs-dist'
 import { parseGuitarProPdf, type GpMeasure } from './gpPdfParser'
+import { configurePdfjsWorker, pdfDocumentParams } from './pdfjsConfig'
 
 if (typeof window !== 'undefined') {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs`
+  configurePdfjsWorker()
 }
 
 export interface TabNote {
@@ -68,7 +69,7 @@ export async function parseTextPDF(file: File): Promise<ParsedTab> {
     console.warn('Guitar Pro PDF parse failed, falling back', err)
   }
 
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+  const pdf = await pdfjsLib.getDocument(pdfDocumentParams(arrayBuffer)).promise
   
   let allText = ''
   const lines: Array<{ text: string; y: number; x: number }> = []

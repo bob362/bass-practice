@@ -1,4 +1,5 @@
 import * as pdfjsLib from 'pdfjs-dist'
+import { configurePdfjsWorker, pdfDocumentParams } from './pdfjsConfig'
 
 /**
  * Guitar Pro / Songsterr 系のテキストPDF（標準記譜＋4線タブ）を読む。
@@ -948,11 +949,9 @@ function applyTechniques(beats: GpBeat[], marks: Array<{ x: number; kind: 'h' | 
 }
 
 export async function parseGuitarProPdf(data: ArrayBuffer, filename?: string): Promise<GpScore | null> {
-  if (typeof window !== 'undefined' && !pdfjsLib.GlobalWorkerOptions.workerSrc) {
-    pdfjsLib.GlobalWorkerOptions.workerSrc =
-      'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs'
-  }
-  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(data) }).promise
+  configurePdfjsWorker()
+
+  const pdf = await pdfjsLib.getDocument(pdfDocumentParams(data)).promise
   const allItems: TextItem[] = []
   const pageSystems: Array<{
     system: System

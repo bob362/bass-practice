@@ -20,7 +20,8 @@ const STANDARD: Record<number, number[]> = {
 
 const LETTER_PC: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 }
 
-const DROP_RE = /\b[dD][rR][oO][pP](?:[eE][dD])?\s+([A-G])(?:\s*([b#]))?(?![a-z])/
+// 「Drop」+ 省略可能な「ped」。例えば Dropped D
+const DROP_RE = /\b[dD][rR][oO][pP][pP]?[eE]?[dD]?\s+([A-G])(?:\s*([b#]))?(?![a-z])/
 const ENTRY_RE = /(?:\((\d)\)\s*)?=\s*([A-G])(?:\s*([b#]))?(?![\w])/g
 const STANDARD_TARGET_RE = /\b([A-G])(?:\s*([b#]))?\s+standard\b/
 
@@ -68,12 +69,11 @@ function stepShift(text: string): number | null {
   const low = text.toLowerCase()
   if (standardShift(text) == null && !/(tune|half|whole|full|one|step|down|up)/.test(low)) return null
   let mag = 0
+  // 「1/2 step」を誤って「2 step」と数えないよう順序に注意
   if (/1\s*1\/2\s*steps?/.test(low)) mag = 1.5
-  else if (/2\s*steps?/.test(low)) mag = 2
-  else if (/half\s+step/.test(low)) mag = 0.5
+  else if (/1\/2\s*steps?/.test(low) || /down\s+1\/2/.test(low) || /half\s+step/.test(low)) mag = 0.5
   else if (/whole\s+step|full\s+step|one\s+step/.test(low)) mag = 1
-  else if (/down\s+1\/2/.test(low)) mag = 0.5
-  else if (/1\/2\s*step/.test(low)) mag = 0.5
+  else if (/(?<!\/)2\s*steps?/.test(low)) mag = 2
   else if (/1\s*steps?/.test(low)) mag = 1
   if (mag === 0) return null
   const down = !/tune\s+up/i.test(text)
@@ -115,7 +115,8 @@ export function parseTuningText(text: string, stringCount: number): TuningResult
     tuner[tuner.length - 1] = target
   }
 
-  const shift = stepShift(t)
+  // step 表記がなければ「Eb standard」等の音名指定で上下させる
+  const shift = stepShift(t) ?? standardShift(t)
   if (shift) {
     for (let i = 0; i < tuner.length; i++) tuner[i] += shift
   }
@@ -150,7 +151,7 @@ export function parseTuningText(text: string, stringCount: number): TuningResult
   for (const a of assignments) {
     const ref = tuner[a.s - 1]
     let pitch: number
-    if (!a.acc && !hasAnyAcc && pcDist(pcOf(a.letter, undefined), ref % 12) <= 1) {
+    if ((dropLetter != null || !!shift) && !a.acc && !hasAnyAcc && pcDist(pcOf(a.letter, undefined), ref % 12) <= 1) {
       // 臨時記号のグリフが落ちた可能性が高いので元の音を残す
       pitch = ref
     } else {

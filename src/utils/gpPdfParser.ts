@@ -1,5 +1,6 @@
 import * as pdfjsLib from 'pdfjs-dist'
 import { configurePdfjsWorker, pdfDocumentParams } from './pdfjsConfig'
+import { parseTuningText } from './tuningText'
 
 /**
  * Guitar Pro / Songsterr 系のテキストPDF（標準記譜＋4線タブ）を読む。
@@ -106,7 +107,7 @@ interface Dot {
   y: number
 }
 
-interface Staff {
+export interface Staff {
   lines: number[] // top → bottom
   kind: 'tab' | 'notation'
   x1: number
@@ -459,14 +460,25 @@ function nearestLine(yCenter: number, lines: number[]): { index: number; dist: n
   return { index: best, dist }
 }
 
-function detectTuning(items: TextItem[]): { tuning: string; label: string } {
-  const text = items.map(i => i.str).join(' ')
-  if (/drop(?:ped)?\s*d/i.test(text) || /=\s*D\b/.test(text)) {
-    return { tuning: 'D1 A1 D2 G2', label: 'ドロップD' }
+/**
+ * ヘッダー領域のテキスト項目を ', '= F' の式に組み立てる。
+ * Guitar Pro の SMuFL 記号（弦番号円 Digital・臨時記号）を通常文字に置き換える。
+ */
+export function tuningHeaderText(items: Array<{ str: string }>): string {
+  const parts: string[] = []
+  for (const it of items) {
+    let s = ''
+    for (const ch of it.str) {
+      const c = ch.codePointAt(0) ?? 0
+      if (c >= 0xe834 && c <= 0xe839) s += ` (${c - 0xe833}) `  // 弦番号。U+E834 = 弦1（最高音）
+      else if (c === 0xe260) s += ' b '
+      else if (c === 0xe262) s += ' # '
+      else if (c >= 0xe000 && c <= 0xf8ff) continue  // その他の私用領域の音楽グリフは捨てる
+      else s += ch
+    }
+    parts.push(s)
   }
-  if (/drop\s*c/i.test(text)) return { tuning: 'C1 G1 C2 F2', label: 'ドロップC' }
-  if (/standard/i.test(text)) return { tuning: 'E1 A1 D2 G2', label: 'スタンダード' }
-  return { tuning: 'E1 A1 D2 G2', label: 'スタンダード' }
+  return parts.join(' ')
 }
 
 function detectTempo(items: TextItem[]): number {
@@ -700,19 +712,20 @@ function notationBeats(
   return beats
 }
 
-function fretsInMeasure(items: TextItem[], tab: Staff, x1: number, x2: number): Array<{ x: number; string: number; fret: number; dead: boolean; w: number }> {
+/** タブの1小節からフレット数字と死に音符（x / X / ×）を読む */
+export function fretsInMeasure(items: TextItem[], tab: Staff, x1: number, x2: number): Array<{ x: number; string: number; fret: number; dead: boolean; w: number }> {
   const spacing = tab.lines[0] - tab.lines[1]
   const out: Array<{ x: number; string: number; fret: number; dead: boolean; w: number }> = []
   for (const it of items) {
     const raw = it.str.trim()
-    if (!/^(\d{1,2}|x)$/i.test(raw)) continue
+    if (!/^(\d{1,2}|x|×)$/i.test(raw)) continue
     if (it.x < x1 - 1 || it.x > x2 - 1) continue
     const centerY = it.y + it.h * 0.42
     const { index, dist } = nearestLine(centerY, tab.lines)
     if (dist > spacing * 0.48) continue
     // alphaTab: 1 = 一番下の線
     const string = tab.lines.length - index
-    const dead = /^x$/i.test(raw)
+    const dead = /^[x×]$/i.test(raw)
     out.push({ x: it.x + it.w / 2, string, fret: dead ? 0 : parseInt(raw, 10), dead, w: it.w })
   }
   return out
@@ -953,6 +966,8 @@ export async function parseGuitarProPdf(data: ArrayBuffer, filename?: string): P
 
   const pdf = await pdfjsLib.getDocument(pdfDocumentParams(data)).promise
   const allItems: TextItem[] = []
+  let pageOneItems: TextItem[] = []
+  let pageOneNotationTop: number | null = null
   const pageSystems: Array<{
     system: System
     bars: number[]
@@ -985,6 +1000,10 @@ export async function parseGuitarProPdf(data: ArrayBuffer, filename?: string): P
     const lines = clusterY(geo.horiz, pageH)
     const staves = findStaves(lines)
     const sys = pairSystems(staves)
+    if (p === 1) {
+      pageOneItems = items
+      if (sys.length > 0) pageOneNotationTop = sys[0].notation.lines[0]
+    }
     for (const system of sys) {
       const bars = barlineXs(geo.vert, system.notation, system.tab)
       pageSystems.push({
@@ -1001,7 +1020,12 @@ export async function parseGuitarProPdf(data: ArrayBuffer, filename?: string): P
 
   if (pageSystems.length === 0) return null
 
-  const tuning = detectTuning(allItems)
+  // ヘッダーは 1 ページ目の最初の段の五線より上。段が無ければ 1 ページ目全体
+  const headerItems = pageOneNotationTop == null
+    ? pageOneItems
+    : pageOneItems.filter(it => it.y > pageOneNotationTop + 6)
+  const stringCount = pageSystems[0].system.tab.lines.length || 4
+  const tuning = parseTuningText(tuningHeaderText(headerItems), stringCount)
   const tempo = detectTempo(allItems)
   const ts = detectTimeSignature(allItems, pageSystems[0].system.notation)
   const measures: GpMeasure[] = []

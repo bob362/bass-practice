@@ -17,6 +17,19 @@ describe('convertToAlphaTab', () => {
     })
     expect(tex).toContain('5.3')
   })
+
+  it('5弦チューニングと弦5の音を出力する', () => {
+    const tex = convertToAlphaTab({
+      tuning: 'B0 E1 A1 D2 G2',
+      measures: [{
+        notes: [],
+        gp: { beats: [{ duration: 1, notes: [{ string: 5, fret: 3 }] }], timeSignature: { beats: 4, beatType: 4 } },
+      }],
+      tempo: 120,
+    })
+    expect(tex).toContain('\\tuning (B0 E1 A1 D2 G2)')
+    expect(tex).toContain('3.5')
+  })
 })
 
 describe('tex <-> editable', () => {

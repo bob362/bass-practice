@@ -3,7 +3,7 @@ import { configurePdfjsWorker, pdfDocumentParams } from './pdfjsConfig'
 import { parseTuningText } from './tuningText'
 
 /**
- * Guitar Pro / Songsterr 系のテキストPDF（標準記譜＋4線タブ）を読む。
+ * Guitar Pro / Songsterr 系のテキストPDF（標準記譜＋4〜6線タブ）を読む。
  * 弦の割り当てはタブの譜線Y座標、小節は小節線、音価は符頭・連桁・旗・休符から取る。
  * alphaTab の弦番号は 1 が一番低い弦（タブの一番下）。
  */
@@ -114,7 +114,7 @@ export interface Staff {
   x2: number
 }
 
-interface System {
+export interface System {
   notation: Staff
   tab: Staff
 }
@@ -316,7 +316,7 @@ function pairBeamEdges(edges: BeamEdge[]): Beam[] {
   return beams
 }
 
-function clusterY(segs: HSeg[], pageH: number): Array<{ y: number; x1: number; x2: number }> {
+export function clusterY(segs: HSeg[], pageH: number): Array<{ y: number; x1: number; x2: number }> {
   const sorted = [...segs].sort((a, b) => b.y - a.y)
   const clusters: Array<{ y: number; x1: number; x2: number; n: number; len: number }> = []
   for (const s of sorted) {
@@ -339,11 +339,46 @@ function clusterY(segs: HSeg[], pageH: number): Array<{ y: number; x1: number; x
   })
 }
 
-function findStaves(lines: Array<{ y: number; x1: number; x2: number }>): Staff[] {
+// 五線と直下のタブの間隔比からページ倍率を求める
+export function staffScale(lines: Array<{ y: number; x1: number; x2: number }>): number {
+  const sorted = [...lines].sort((a, b) => b.y - a.y)
+  const recorded: number[] = []
+  for (let i = 0; i + 5 <= sorted.length; i++) {
+    const group = sorted.slice(i, i + 5)
+    const ref = group[0]
+    if (group.some(l => Math.abs(l.x1 - ref.x1) > 6 || Math.abs(l.x2 - ref.x2) > 6)) continue
+    const gaps = group.slice(1).map((l, j) => group[j].y - l.y)
+    const gN = gaps.reduce((sum, gap) => sum + gap, 0) / 4
+    if (gN < 3.4 || gN > 8.5 || gaps.some(gap => Math.abs(gap - gN) > gN * 0.1)) continue
+    // 両端が異なる連桁などは飛ばす
+    const below = sorted.slice(i + 5).filter(l =>
+      Math.abs(l.x1 - ref.x1) <= 6 || Math.abs(l.x2 - ref.x2) <= 6)
+    if (below.length < 4) continue
+    const distance = group[4].y - below[0].y
+    if (distance < 2 * gN || distance > 12 * gN) continue
+    const gT = below[0].y - below[1].y
+    if (gT / gN < 1.3 || gT / gN > 1.8) continue
+    let count = 2
+    while (count < below.length) {
+      const gap = below[count - 1].y - below[count].y
+      if (Math.abs(gap - gT) > gT * 0.1) break
+      count++
+    }
+    if (count >= 4) recorded.push(gN)
+  }
+  if (recorded.length === 0) return 1
+  recorded.sort((a, b) => a - b)
+  const mid = Math.floor(recorded.length / 2)
+  const median = recorded.length % 2 ? recorded[mid] : (recorded[mid - 1] + recorded[mid]) / 2
+  const k = median / 4.25
+  return Math.abs(k - 1) < 0.15 ? 1 : Math.max(0.5, Math.min(2.5, k))
+}
+
+export function findStaves(lines: Array<{ y: number; x1: number; x2: number }>, scale = staffScale(lines)): Staff[] {
   // 同じ高さ帯に段いっぱいの譜線があるとき、1小節分の連桁は捨てる
   const filtered = lines.filter(line => {
     const span = line.x2 - line.x1
-    const neighbors = lines.filter(o => Math.abs(o.y - line.y) < 28)
+    const neighbors = lines.filter(o => Math.abs(o.y - line.y) < 28 * scale)
     const widest = Math.max(...neighbors.map(o => o.x2 - o.x1))
     return span >= widest * 0.72
   })
@@ -375,16 +410,51 @@ function findStaves(lines: Array<{ y: number; x1: number; x2: number }>): Staff[
     return true
   }
 
+  // 端片方/両方 - 実際の譜線は左右端の少なくとも片方を共有する（もう一方は文字や図形に隠れることがある）。
+  // 梁や括弧の迷線は両端とも異なるので弾ける
+  const tryTabRun = (start: number) => {
+    let last = start
+    let firstGap = 0
+    const ref = sorted[start]
+    const idxs = [start]
+    while (idxs.length < 6 && last + 1 < sorted.length) {
+      const j = last + 1
+      if (used.has(j)) break
+      const gap = sorted[last].y - sorted[j].y
+      if (gap < 5.4 * scale || gap > 7.6 * scale) break
+      if (idxs.length >= 2 && Math.abs(gap - firstGap) > firstGap * 0.15) break
+      if (Math.abs(sorted[j].x1 - ref.x1) > 6 && Math.abs(sorted[j].x2 - ref.x2) > 6) break
+      if (idxs.length === 1) firstGap = gap
+      idxs.push(j)
+      last = j
+    }
+    if (idxs.length < 4) return
+    const group = idxs.map(i2 => sorted[i2])
+    const x1 = Math.max(...group.map(g => g.x1))
+    const x2 = Math.min(...group.map(g => g.x2))
+    if (x2 - x1 < 60) return
+    const spans = group.map(g => g.x2 - g.x1)
+    const widest = Math.max(...spans)
+    if (spans.some(s => s < widest * 0.55)) return
+    staves.push({
+      lines: group.map(g => g.y),
+      kind: 'tab',
+      x1: Math.min(...group.map(g => g.x1)),
+      x2: Math.max(...group.map(g => g.x2)),
+    })
+    for (const i2 of idxs) used.add(i2)
+  }
+
   for (let i = 0; i < sorted.length; i++) {
     if (used.has(i)) continue
     // 五線は約4.2pt、タブは約6.4pt。連桁を混ぜないよう間隔を狭く見る
-    if (take(i, 5, 3.4, 5.3, 'notation')) continue
-    if (take(i, 4, 5.4, 7.6, 'tab')) continue
+    if (take(i, 5, 3.4 * scale, 5.3 * scale, 'notation')) continue
+    tryTabRun(i)
   }
   return staves
 }
 
-function pairSystems(staves: Staff[]): System[] {
+export function pairSystems(staves: Staff[]): System[] {
   const systems: System[] = []
   const notations = staves.filter(s => s.kind === 'notation')
   const used = new Set<Staff>()

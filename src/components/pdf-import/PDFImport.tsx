@@ -381,10 +381,10 @@ export default function PDFImport({ onSongSelected }: PDFImportProps) {
                   />
                 </div>
                 <div className="form-group">
-                  <label>チューニング（低い弦から）</label>
+                  <label>チューニング（高い弦から）</label>
                   <input
                     type="text"
-                    value={editableScore.metadata.tuning || 'E1 A1 D2 G2'}
+                    value={editableScore.metadata.tuning || 'G2 D2 A1 E1'}
                     onChange={(e) => handleMetadataChange('tuning', e.target.value)}
                   />
                 </div>
@@ -399,7 +399,7 @@ export default function PDFImport({ onSongSelected }: PDFImportProps) {
                   />
                 </div>
               </div>
-              <h4 style={{ marginBottom: '0.75rem' }}>小節（1が一番低い弦。:8 は8分音符、{'{d}'} は付点、{'{h}'} ハンマリング、{'{sl}'} スライド、x はデッドノート）</h4>
+              <h4 style={{ marginBottom: '0.75rem' }}>小節（1が一番高い弦。:8 は8分音符、{'{d}'} は付点、{'{h}'} ハンマリング、{'{sl}'} スライド、x はデッドノート）</h4>
               <div className="measures-editor">
                 {editableScore.measures.map((measure, index) => (
                   <div key={index} className="measure-item">

@@ -1,5 +1,6 @@
+import { OPS } from 'pdfjs-dist'
 import { describe, expect, expectTypeOf, it } from 'vitest'
-import { findStaves, fretsInMeasure, pairSystems, staffScale, tuningHeaderText, type Staff } from './gpPdfParser'
+import { extractGeometry, pairBeamEdges, barlineXs, notationBeats, findStaves, fretsInMeasure, pairSystems, staffScale, tuningHeaderText, type Staff } from './gpPdfParser'
 
 // 合成データ。4線タブの譜線（上から高音弦）。pdf.js は y が上向き
 const tab: Staff = {
@@ -197,5 +198,38 @@ describe('pairSystems', () => {
     expect(systems).toHaveLength(1)
     expect(systems[0].notation).toBe(notation)
     expect(systems[0].tab).toBe(tab)
+  })
+})
+
+describe('staff-relative page geometry', () => {
+  it.each([0.6, 1, 1.4])('classifies paths and rhythm identically at scale %s', scale => {
+    const coords = [
+      [10, 80, 120, 80], // staff line
+      [40, 48, 40, 68], // stem
+      [10, 20, 10, 39.2], // barline
+      [90, 20, 90, 39.2],
+      [40, 67, 65, 67], // beam edges
+      [40, 69.13, 65, 69.13],
+    ]
+    const paths = coords.map(c => [[13, 14], c.map(v => v * scale)])
+    paths.push([[19], [45, 47, 2, 2].map(v => v * scale)])
+    const geo = extractGeometry({
+      fnArray: paths.map(() => OPS.constructPath), argsArray: paths,
+    }, scale)
+    expect(geo.horiz.some(h => Math.abs(h.y - 80) < 1e-8)).toBe(true)
+    expect(geo.dots).toHaveLength(1)
+    expect(geo.dots[0].x).toBeCloseTo(46)
+    const beams = pairBeamEdges(geo.beamEdges)
+    expect(beams).toHaveLength(1)
+    const system = {
+      notation: { kind: 'notation' as const, lines: [60, 55.75, 51.5, 47.25, 43], x1: 10, x2: 90 },
+      tab: { kind: 'tab' as const, lines: [39.2, 32.8, 26.4, 20], x1: 10, x2: 90 },
+    }
+    expect(barlineXs(geo.vert, system.notation, system.tab).map(x => Math.round(x))).toEqual([10, 90])
+    const beats = notationBeats([
+      { str: '\uE0A4', x: 37, y: 46.4, w: 5, h: 17 },
+    ], beams, geo.vert, geo.dots, system, 10, 90)
+    expect(beats).toHaveLength(1)
+    expect(beats[0].duration).toBe(0.75)
   })
 })

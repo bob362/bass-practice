@@ -140,7 +140,7 @@ function applyPt(m: number[], x: number, y: number): [number, number] {
   return [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]]
 }
 
-function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] }): {
+export function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] }, scale = 1): {
   horiz: HSeg[]
   vert: VSeg[]
   curves: Curve[]
@@ -148,7 +148,7 @@ function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] }): {
   beamEdges: BeamEdge[]
 } {
   const OPS = pdfjsLib.OPS
-  let ctm = [1, 0, 0, 1, 0, 0]
+  let ctm = [1 / scale, 0, 0, 1 / scale, 0, 0]
   const stack: number[][] = []
   const horiz: HSeg[] = []
   const vert: VSeg[] = []
@@ -263,7 +263,7 @@ function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] }): {
  * 連桁は太さ約 2.1pt の塗り矩形。辺を組にして 1 本と数える。
  * 隣の連桁とのすき間は約 1pt なので、太さ 2.1 に一番近い相手を選ぶ。
  */
-function pairBeamEdges(edges: BeamEdge[]): Beam[] {
+export function pairBeamEdges(edges: BeamEdge[]): Beam[] {
   const slope = (e: BeamEdge) => (e.y2 - e.y1) / (e.x2 - e.x1 || 1)
   const partner = new Array<number>(edges.length).fill(-1)
   for (let i = 0; i < edges.length; i++) {
@@ -316,7 +316,7 @@ function pairBeamEdges(edges: BeamEdge[]): Beam[] {
   return beams
 }
 
-export function clusterY(segs: HSeg[], pageH: number): Array<{ y: number; x1: number; x2: number }> {
+export function clusterY(segs: HSeg[], pageH: number, staffOnly = false): Array<{ y: number; x1: number; x2: number }> {
   const sorted = [...segs].sort((a, b) => b.y - a.y)
   const clusters: Array<{ y: number; x1: number; x2: number; n: number; len: number }> = []
   for (const s of sorted) {
@@ -326,7 +326,9 @@ export function clusterY(segs: HSeg[], pageH: number): Array<{ y: number; x1: nu
       clusters.push(c)
     }
     c.n++
-    c.y = (c.y * (c.n - 1) + s.y) / c.n
+    c.y = staffOnly
+      ? (c.y * c.len + s.y * (s.x2 - s.x1)) / (c.len + s.x2 - s.x1)
+      : (c.y * (c.n - 1) + s.y) / c.n
     c.x1 = Math.min(c.x1, s.x1)
     c.x2 = Math.max(c.x2, s.x2)
     c.len += s.x2 - s.x1
@@ -335,8 +337,30 @@ export function clusterY(segs: HSeg[], pageH: number): Array<{ y: number; x1: nu
   return clusters.filter(c => {
     if (c.y < 8 || c.y > pageH - 8) return false
     const span = c.x2 - c.x1
-    return span >= 70 && c.len >= 36
+    return span >= 70 && c.len >= 36 && (!staffOnly || c.len >= span * 0.55)
   })
+}
+
+/** Remove short beam/ledger clusters before estimating a non-native page size. */
+export function pageStaffScale(lines: HSeg[]): number {
+  const wide = lines.filter(l => {
+    const widest = Math.max(...lines.filter(o => Math.abs(o.y - l.y) < 45).map(o => o.x2 - o.x1))
+    return l.x2 - l.x1 >= widest * 0.95
+  })
+  const scale = staffScale(wide)
+  if (scale !== 1) return scale
+  // A TAB-only print has no five-line staff to use as a reference.
+  const gaps: number[] = []
+  const sorted = [...wide].sort((a, b) => b.y - a.y)
+  for (let i = 0; i + 3 < sorted.length; i++) {
+    const run = sorted.slice(i, i + 4)
+    const gap = (run[0].y - run[3].y) / 3
+    if (gap <= 8.5 || gap > 16) continue
+    if (run.some((l, j) => j > 0 && Math.abs(run[j - 1].y - l.y - gap) > gap * 0.1)) continue
+    if (run.some(l => Math.abs(l.x1 - run[0].x1) > 6 && Math.abs(l.x2 - run[0].x2) > 6)) continue
+    gaps.push(gap / 6.4)
+  }
+  return gaps.length ? gaps.sort((a, b) => a - b)[Math.floor(gaps.length / 2)] : 1
 }
 
 // 五線と直下のタブの間隔比からページ倍率を求める
@@ -503,7 +527,7 @@ function verticalsOnStaff(vert: VSeg[], staff: Staff): number[] {
 }
 
 /** タブ譜を貫く縦線を小節線にする。符幹はタブまで届かない。 */
-function barlineXs(vert: VSeg[], _notation: Staff, tab: Staff): number[] {
+export function barlineXs(vert: VSeg[], _notation: Staff, tab: Staff): number[] {
   const xs = verticalsOnStaff(vert, tab)
   xs.sort((a, b) => a - b)
   const clustered: number[] = []
@@ -668,7 +692,7 @@ function stemFor(vert: VSeg[], head: TextItem): { x: number; tip: number; base: 
   return { x: s.x, tip, base }
 }
 
-function notationBeats(
+export function notationBeats(
   items: TextItem[],
   beams: Beam[],
   stems: VSeg[],
@@ -1063,12 +1087,29 @@ export async function parseGuitarProPdf(data: ArrayBuffer, filename?: string): P
         h: raw.height || 7,
       })
     }
-    allItems.push(...items)
     const op = await page.getOperatorList()
-    const geo = extractGeometry(op)
+    const pageGeometry = extractGeometry(op)
+    const scale = pageStaffScale(clusterY(pageGeometry.horiz, pageH, true))
+    // Work in Qt staff units throughout, including path classification. This
+    // makes every downstream distance/size threshold relative to staff size.
+    // Leave native Qt coordinates untouched to preserve their exact behaviour.
+    const geo = scale === 1 ? pageGeometry : extractGeometry(op, scale)
+    if (scale !== 1) {
+      for (const item of items) {
+        item.x /= scale
+        item.y /= scale
+        item.w /= scale
+        item.h /= scale
+      }
+    }
+    allItems.push(...items)
     const beams = pairBeamEdges(geo.beamEdges)
-    const lines = clusterY(geo.horiz, pageH)
-    const staves = findStaves(lines)
+    const lines = clusterY(geo.horiz, pageH / scale, scale !== 1)
+    const staffLines = scale === 1 ? lines : lines.filter(l => {
+      const widest = Math.max(...lines.filter(o => Math.abs(o.y - l.y) < 28).map(o => o.x2 - o.x1))
+      return l.x2 - l.x1 >= widest * 0.95
+    })
+    const staves = findStaves(staffLines, 1)
     const sys = pairSystems(staves)
     if (p === 1) {
       pageOneItems = items

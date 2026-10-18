@@ -1,6 +1,6 @@
 import { OPS } from 'pdfjs-dist'
 import { describe, expect, expectTypeOf, it } from 'vitest'
-import { extractGeometry, pairBeamEdges, barlineXs, notationBeats, findStaves, fretsInMeasure, pairSystems, staffScale, tuningHeaderText, type Staff } from './gpPdfParser'
+import { extractGeometry, pairBeamEdges, barlineXs, notationBeats, findStaves, fretsInMeasure, pairSystems, staffScale, clusterY, tuningHeaderText, type Staff } from './gpPdfParser'
 
 // 合成データ。4線タブの譜線（上から高音弦）。pdf.js は y が上向き
 const tab: Staff = {
@@ -202,7 +202,7 @@ describe('pairSystems', () => {
 })
 
 describe('staff-relative page geometry', () => {
-  it.each([0.6, 1, 1.4])('classifies paths and rhythm identically at scale %s', scale => {
+  it.each([0.6, 0.7, 1, 1.4])('classifies paths and rhythm identically at scale %s', scale => {
     const coords = [
       [10, 80, 120, 80], // staff line
       [40, 48, 40, 68], // stem
@@ -231,5 +231,93 @@ describe('staff-relative page geometry', () => {
     ], beams, geo.vert, geo.dots, system, 10, 90)
     expect(beats).toHaveLength(1)
     expect(beats[0].duration).toBe(0.75)
+  })
+})
+
+
+describe('printed outline geometry', () => {
+  // Hand-built ovals, unrelated to any input PDF or font outline.
+  const oval = (x: number, y: number, w: number, h: number) => ({
+    ops: [13, 15, 15, 15, 15, 18],
+    coords: [x, y + h / 2,
+      x, y + h, x, y + h, x + w / 2, y + h,
+      x + w, y + h, x + w, y + h, x + w, y + h / 2,
+      x + w, y, x + w, y, x + w / 2, y,
+      x, y, x, y, x, y + h / 2],
+  })
+  const geometry = (paths: ReturnType<typeof oval>[], scale: number) => extractGeometry({
+    fnArray: [OPS.transform, ...paths.map(() => OPS.constructPath)],
+    argsArray: [[scale, 0, 0, scale, 12 * scale, 9 * scale],
+      ...paths.map(p => [p.ops, p.coords])],
+  }, scale)
+
+  it.each([0.7, 1, 1.6])('reads filled and hollow ovals without false dots at scale %s', scale => {
+    const black = oval(20, 40, 5, 4)
+    const half = oval(40, 40, 5, 4)
+    const hole = oval(41, 41, 3, 2)
+    const whole = oval(60, 40, 7, 4)
+    const wholeHole = oval(62, 41, 3, 2)
+    const geo = geometry([black,
+      { ops: [...half.ops, ...hole.ops], coords: [...half.coords, ...hole.coords] },
+      { ops: [...whole.ops, ...wholeHole.ops], coords: [...whole.coords, ...wholeHole.coords] },
+      oval(29, 42, 2, 2)], scale)
+    expect(geo.glyphs.map(g => g.str)).toEqual(['\uE0A4', '\uE0A3', '\uE0A2'])
+    expect(geo.glyphs[0].x).toBeCloseTo(32)
+    expect(geo.dots).toHaveLength(1)
+    expect(geo.dots[0].x).toBeCloseTo(42)
+    const system = {
+      notation: { kind: 'notation' as const, lines: [60, 55.75, 51.5, 47.25, 43], x1: 10, x2: 100 },
+      tab,
+    }
+    expect(notationBeats(geo.glyphs, [], [], geo.dots, system, 10, 100).map(b => b.duration)).toEqual([1.5, 2, 4])
+  })
+
+  it('uses a small inner contour only as a hollow-notehead candidate', () => {
+    const head = oval(20, 40, 5, 4)
+    const hole = oval(21.5, 41.5, 2, 1)
+    const geo = geometry([{ ops: [...head.ops, ...hole.ops], coords: [...head.coords, ...hole.coords] }, oval(50, 40, 2, 1)], 1)
+    expect(geo.glyphs.map(g => g.str)).toEqual(['\uE0A3'])
+    const system = { notation: { kind: 'notation' as const, lines: [60, 55.75, 51.5, 47.25, 43], x1: 10, x2: 100 }, tab }
+    expect(notationBeats(geo.glyphs, [], [], [], system, 10, 100).map(b => b.duration)).toEqual([2])
+  })
+
+  it.each([0.7, 1, 1.6])('distinguishes an outlined rectangular rest from an oval at scale %s', scale => {
+    const roundedRest = {
+      ops: [13, 14, 15, 14, 15, 14, 15, 14, 15, 18],
+      coords: [20.5, 40, 24.5, 40,
+        25, 40, 25, 40, 25, 40.5,
+        25, 42, 25, 42.5, 25, 42.5, 24.5, 42.5,
+        20.5, 42.5, 20, 42.5, 20, 42.5, 20, 42,
+        20, 40.5, 20, 40, 20, 40, 20.5, 40],
+    }
+    const geo = geometry([roundedRest], scale)
+    expect(geo.glyphs.map(g => g.str)).toEqual([String.fromCodePoint(0xf0000)])
+    for (const [lines, duration] of [
+      [[55.75, 51.5, 47.25, 43, 38.75], 4],
+      [[57.5, 53.25, 49, 44.75, 40.5], 2],
+    ] as const) {
+      const system = { notation: { kind: 'notation' as const, lines: [...lines], x1: 10, x2: 100 }, tab }
+      expect(notationBeats(geo.glyphs, [], [], geo.dots, system, 10, 100).map(b => b.duration)).toEqual([duration])
+    }
+    expect(geo.dots).toHaveLength(0)
+  })
+
+  it('retains heavily interrupted staff lines but rejects sparse ledger clusters', () => {
+    const fragments = (y: number, n: number) => Array.from({ length: n }, (_, i) => ({ y, x1: 10 + i * 10, x2: 12.8 + i * 10 }))
+    const lines = clusterY([...fragments(80, 15), ...fragments(60, 4)], 200, true)
+    expect(lines).toHaveLength(1)
+    expect(lines[0].y).toBeCloseTo(80)
+  })
+
+  it('rejects TAB rhythm stems that extend above the staff as barlines', () => {
+    const notation: Staff = { kind: 'notation', lines: [80, 75.75, 71.5, 67.25, 63], x1: 10, x2: 90 }
+    const vert = [
+      { x: 10, y1: 23.6, y2: 42.8 },
+      { x: 50, y1: 23.6, y2: 42.8 },
+      { x: 70, y1: 30, y2: 55 },
+      { x: 90, y1: 23.6, y2: 42.8 },
+    ]
+    expect(barlineXs(vert, notation, tab, true)).toEqual([10, 50, 90])
+    expect(barlineXs(vert, notation, tab)).toEqual([10, 50, 70, 90])
   })
 })

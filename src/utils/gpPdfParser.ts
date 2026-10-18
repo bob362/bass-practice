@@ -12,6 +12,7 @@ const NOTEHEAD_BLACK = 0xe0a4
 const NOTEHEAD_HALF = 0xe0a3
 const NOTEHEAD_WHOLE = 0xe0a2
 const NOTEHEAD_X = 0xe0a9
+const REST_RECT = 0xf0000
 const REST_WHOLE = 0xe4e3
 const REST_HALF = 0xe4e4
 const REST_QUARTER = 0xe4e5
@@ -61,6 +62,7 @@ export interface GpScore {
 }
 
 interface TextItem {
+  restBounds?: { bottom: number; top: number }
   str: string
   x: number
   y: number
@@ -146,6 +148,7 @@ export function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] },
   curves: Curve[]
   dots: Dot[]
   beamEdges: BeamEdge[]
+  glyphs: TextItem[]
 } {
   const OPS = pdfjsLib.OPS
   let ctm = [1 / scale, 0, 0, 1 / scale, 0, 0]
@@ -155,6 +158,7 @@ export function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] },
   const curves: Curve[] = []
   const dots: Dot[] = []
   const beamEdges: BeamEdge[] = []
+  const glyphs: TextItem[] = []
 
   const pushSeg = (x1: number, y1: number, x2: number, y2: number) => {
     const [px1, py1] = applyPt(ctm, x1, y1)
@@ -203,24 +207,52 @@ export function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] },
       let cx = 0
       let cy = 0
       let sub: Array<[number, number]> = []
-      const flush = () => {
+      let controls: Array<[number, number]> = []
+      let cubics = 0
+      let straight = 0
+      const pathPoints: Array<[number, number]> = []
+      let pathCubics = 0
+      let pathStraight = 0
+      let subpaths = 0
+      const contours: Array<{ x: number; y: number; w: number; h: number }> = []
+      const flush = (closed = false) => {
         considerDot(sub)
+        pathPoints.push(...controls)
+        if ([4, 6, 8, 10].includes(cubics) && straight === 0 && controls.length) {
+          const xs = controls.map(p => p[0]), ys = controls.map(p => p[1])
+          const x = Math.min(...xs), y = Math.min(...ys)
+          const w = Math.max(...xs) - x, h = Math.max(...ys) - y
+          // Printed music fonts may be outlines rather than text. An oval
+          // notehead has four cubic sides; retain its inner contour as a hole.
+          if (w > 0 && w <= 9 && h > 0 && h <= 5.5 && (closed || (w >= 3 && h >= 1.5))) contours.push({ x, y, w, h })
+        }
         sub = []
+        controls = []
+        cubics = 0
+        straight = 0
       }
       for (const o of ops) {
         if (o === 13) {
+          subpaths++
           flush()
           cx = coords[k++]
           cy = coords[k++]
           sub.push(applyPt(ctm, cx, cy))
+          controls.push(applyPt(ctm, cx, cy))
         } else if (o === 14) {
+          straight++
+          pathStraight++
           const x2 = coords[k++]
           const y2 = coords[k++]
           pushSeg(cx, cy, x2, y2)
           cx = x2
           cy = y2
           sub.push(applyPt(ctm, cx, cy))
+          controls.push(applyPt(ctm, cx, cy))
         } else if (o === 15) {
+          cubics++
+          pathCubics++
+          controls.push(applyPt(ctm, coords[k], coords[k + 1]), applyPt(ctm, coords[k + 2], coords[k + 3]))
           k += 4
           const x3 = coords[k++]
           const y3 = coords[k++]
@@ -232,13 +264,14 @@ export function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] },
           cx = x3
           cy = y3
           sub.push([qx, qy])
+          controls.push([qx, qy])
         } else if (o === 16 || o === 17) {
           k += 2
           cx = coords[k++]
           cy = coords[k++]
           sub.push(applyPt(ctm, cx, cy))
         } else if (o === 18) {
-          flush()
+          flush(true)
         } else if (o === 19) {
           const x = coords[k++]
           const y = coords[k++]
@@ -254,9 +287,33 @@ export function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] },
         }
       }
       flush()
+      if (subpaths === 1 && pathPoints.length) {
+        const xs = pathPoints.map(p => p[0]), ys = pathPoints.map(p => p[1])
+        const x = Math.min(...xs), y = Math.min(...ys)
+        const w = Math.max(...xs) - x, h = Math.max(...ys) - y
+        let code = 0
+        // Rounded rectangular rests, zigzag quarter rests, hooked rests and
+        // flags have distinct contour complexity and staff-relative bounds.
+        if (pathStraight === 4 && pathCubics === 4 && w >= 4 && w <= 6 && h >= 1.5 && h < 3) code = REST_RECT
+        else if (w >= 3 && w <= 7 && h >= 6 && h <= 18) {
+          if (pathCubics >= 25 && pathStraight === 0 && h / w > 2.5) code = REST_QUARTER
+          else if (pathCubics >= 15 && pathStraight <= 3) code = pathCubics < 25 ? REST_8 : pathCubics < 40 ? REST_16 : REST_32
+          else if (pathCubics >= 8 && pathCubics < 15 && pathStraight <= 2 && h > 11) code = FLAG_8_UP
+        }
+        if (code) glyphs.push({ str: String.fromCodePoint(code), x, y: y + h / 2 - 1.6, w, h: 17, ...(code === REST_RECT ? { restBounds: { bottom: y, top: y + h } } : {}) })
+      }
+      for (const c of contours) {
+        if (c.w < 3 || c.h < 1.5) continue
+        if (contours.some(o => o !== c && o.x <= c.x && o.y <= c.y && o.w > c.w && o.h > c.h)) continue
+        const hollow = contours.some(o => o !== c && o.x > c.x && o.x + o.w < c.x + c.w && o.y >= c.y && o.y + o.h <= c.y + c.h)
+        glyphs.push({ str: String.fromCodePoint(hollow ? (c.w > 6 ? NOTEHEAD_WHOLE : NOTEHEAD_HALF) : NOTEHEAD_BLACK), x: c.x, y: c.y + c.h / 2 - 1.6, w: c.w, h: 17 })
+      }
     }
   }
-  return { horiz, vert, curves, dots, beamEdges }
+  // Oval noteheads must not also act as augmentation dots.
+  const dotMarks = dots.filter(d => !glyphs.some(h =>
+    Math.abs(d.x - h.x - h.w / 2) < 0.1 && Math.abs(d.y - h.y - 1.6) < 0.1))
+  return { horiz, vert, curves, dots: dotMarks, beamEdges, glyphs }
 }
 
 /**
@@ -337,7 +394,7 @@ export function clusterY(segs: HSeg[], pageH: number, staffOnly = false): Array<
   return clusters.filter(c => {
     if (c.y < 8 || c.y > pageH - 8) return false
     const span = c.x2 - c.x1
-    return span >= 70 && c.len >= 36 && (!staffOnly || c.len >= span * 0.55)
+    return span >= 70 && c.len >= 36 && (!staffOnly || c.len >= span * 0.25)
   })
 }
 
@@ -511,7 +568,7 @@ export function pairSystems(staves: Staff[]): System[] {
   return systems
 }
 
-function verticalsOnStaff(vert: VSeg[], staff: Staff): number[] {
+function verticalsOnStaff(vert: VSeg[], staff: Staff, strict = false): number[] {
   const top = staff.lines[0]
   const bot = staff.lines[staff.lines.length - 1]
   const need = (top - bot) * 0.62
@@ -520,6 +577,8 @@ function verticalsOnStaff(vert: VSeg[], staff: Staff): number[] {
     if (v.x < staff.x1 - 4 || v.x > staff.x2 + 8) continue
     const height = v.y2 - v.y1
     if (height > 60) continue
+    // TAB rhythm stems can span most of the staff but extend above it.
+    if (strict && (v.y2 > top + 2 || v.y1 < bot - 2 || height < (top - bot) * 0.9)) continue
     const overlap = Math.min(v.y2, top + 1.5) - Math.max(v.y1, bot - 1.5)
     if (overlap >= need) xs.push(v.x)
   }
@@ -527,8 +586,8 @@ function verticalsOnStaff(vert: VSeg[], staff: Staff): number[] {
 }
 
 /** タブ譜を貫く縦線を小節線にする。符幹はタブまで届かない。 */
-export function barlineXs(vert: VSeg[], _notation: Staff, tab: Staff): number[] {
-  const xs = verticalsOnStaff(vert, tab)
+export function barlineXs(vert: VSeg[], _notation: Staff, tab: Staff, strict = false): number[] {
+  const xs = verticalsOnStaff(vert, tab, strict)
   xs.sort((a, b) => a - b)
   const clustered: number[] = []
   for (const x of xs) {
@@ -705,17 +764,17 @@ export function notationBeats(
   const bot = system.notation.lines[system.notation.lines.length - 1]
   const inBand = (it: TextItem) => it.y < top + 22 && it.y > bot - 16 && it.x >= x1 - 2 && it.x < x2 - 1
   const heads = items.filter(it => {
-    if (!inBand(it) || it.str.length !== 1) return false
+    if (!inBand(it) || [...it.str].length !== 1) return false
     const c = cp(it.str)
     return c === NOTEHEAD_BLACK || c === NOTEHEAD_HALF || c === NOTEHEAD_WHOLE || c === NOTEHEAD_X
   })
   const rests = items.filter(it => {
-    if (!inBand(it) || it.str.length !== 1) return false
+    if (!inBand(it) || [...it.str].length !== 1) return false
     const c = cp(it.str)
-    return c >= REST_WHOLE && c <= REST_32
+    return c === REST_RECT || (c >= REST_WHOLE && c <= REST_32)
   })
   const flags = items.filter(it => {
-    if (it.str.length !== 1) return false
+    if ([...it.str].length !== 1) return false
     const c = cp(it.str)
     return c >= FLAG_8_UP && c <= FLAG_32_DOWN && it.x >= x1 - 4 && it.x < x2 + 4 && it.y < top + 48 && it.y > bot - 36
   })
@@ -798,6 +857,15 @@ export function notationBeats(
       [REST_32]: 0.125,
     }
     let dur = map[c] ?? 1
+    if (c === REST_RECT && r.restBounds) {
+      const spacing = Math.abs(top - bot) / (system.notation.lines.length - 1)
+      const edgeDistance = (edge: number) => Math.min(...system.notation.lines.map(y => Math.abs(y - edge)))
+      const topDistance = edgeDistance(r.restBounds.top)
+      const bottomDistance = edgeDistance(r.restBounds.bottom)
+      // PDF coordinates increase upwards: whole rests hang from a line,
+      // while half rests sit on one. Allow for stroke width and rounding.
+      dur = bottomDistance <= spacing * 0.25 && bottomDistance < topDistance ? 2 : 4
+    }
     if (hasDot(r)) dur *= 1.5
     beats.push({ x: r.x, y: r.y, duration: dur, rest: true, dead: false, confidence: 'high' })
   }
@@ -1102,6 +1170,8 @@ export async function parseGuitarProPdf(data: ArrayBuffer, filename?: string): P
         item.h /= scale
       }
     }
+    // Native exports already expose music glyphs as text.
+    if (!items.some(it => cp(it.str) === NOTEHEAD_BLACK || cp(it.str) === NOTEHEAD_HALF)) items.push(...geo.glyphs)
     allItems.push(...items)
     const beams = pairBeamEdges(geo.beamEdges)
     const lines = clusterY(geo.horiz, pageH / scale, scale !== 1)
@@ -1116,7 +1186,7 @@ export async function parseGuitarProPdf(data: ArrayBuffer, filename?: string): P
       if (sys.length > 0) pageOneNotationTop = sys[0].notation.lines[0]
     }
     for (const system of sys) {
-      const bars = barlineXs(geo.vert, system.notation, system.tab)
+      const bars = barlineXs(geo.vert, system.notation, system.tab, scale !== 1)
       pageSystems.push({
         system,
         bars,

@@ -16,3 +16,12 @@ it('extracts alphaTab timing, tuning, flags and fallback pitch', () => {
   expect(notesInTickRange(score, 960, 4320)).toEqual([score.notes[0]])
   expect(extractPlainScore({}).notes).toEqual([])
 })
+
+it('normalizes legacy ascending tuning using each original string position', () => {
+  const score = extractPlainScore({ masterBars: [{}], tracks: [{ staves: [{
+    tunings: [28, 33, 38, 43],
+    bars: [{ voices: [{ beats: [{ notes: [{ string: 4, fret: 0 }] }] }] }],
+  }] }] })
+  expect(score.tuning).toEqual([43, 38, 33, 28])
+  expect(score.notes[0]).toMatchObject({ string: 4, midi: 28 })
+})

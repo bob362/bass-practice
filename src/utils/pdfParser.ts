@@ -30,7 +30,7 @@ export interface ParsedTab {
   tempo?: number
   title?: string
   artist?: string
-  /** alphaTex の \\tuning に渡す音名。低い弦から */
+  /** 内部では低い弦からの音名。alphaTex 出力時に高い弦からへ反転 */
   tuning?: string
   tuningLabel?: string
 }
@@ -184,7 +184,7 @@ function parseTabLines(sections: string[][]): TabMeasure[] {
           }
           
           measureNotes.push({
-            // 上の行が一番高い弦。alphaTab は 1 が一番低い弦
+            // 上の行が一番高い弦。内部では 1 が一番低い弦
             string: 4 - stringNum,
             fret,
             position,

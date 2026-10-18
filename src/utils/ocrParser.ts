@@ -172,7 +172,7 @@ function parseOCRTabGroup(group: string[]): TabMeasure {
         // フレットが妥当な範囲か確認（0-24）
         if (fret >= 0 && fret <= 24) {
           notes.push({
-            string: stringNum + 1,
+            string: Math.min(4, normalizedLines.length) - stringNum, // Top line is highest; internal 1 is lowest.
             fret,
             position,
             duration: 1,
@@ -195,11 +195,12 @@ function parseOCRTabGroup(group: string[]): TabMeasure {
  */
 function createDefaultMeasure(): TabMeasure {
   return {
+    // Demo riff starts on open low E (internal string 1), then moves to A.
     notes: [
-      { string: 4, fret: 0, position: 0, duration: 1 },
-      { string: 4, fret: 0, position: 1, duration: 1 },
-      { string: 4, fret: 3, position: 2, duration: 1 },
-      { string: 3, fret: 0, position: 3, duration: 1 },
+      { string: 1, fret: 0, position: 0, duration: 1 },
+      { string: 1, fret: 0, position: 1, duration: 1 },
+      { string: 1, fret: 3, position: 2, duration: 1 },
+      { string: 2, fret: 0, position: 3, duration: 1 },
     ],
   }
 }

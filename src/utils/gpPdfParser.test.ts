@@ -1,6 +1,6 @@
 import { OPS } from 'pdfjs-dist'
 import { describe, expect, expectTypeOf, it } from 'vitest'
-import { extractGeometry, pairBeamEdges, barlineXs, notationBeats, findStaves, fretsInMeasure, pairSystems, staffScale, clusterY, tuningHeaderText, type Staff } from './gpPdfParser'
+import { extractGeometry, pairBeamEdges, barlineXs, notationBeats, findStaves, fretsInMeasure, pairSystems, staffScale, clusterY, tuningHeaderText, fillMeasureGaps, printedMeasureNumber, type GpMeasure, type Staff } from './gpPdfParser'
 
 // 合成データ。4線タブの譜線（上から高音弦）。pdf.js は y が上向き
 const tab: Staff = {
@@ -309,6 +309,13 @@ describe('printed outline geometry', () => {
     expect(lines[0].y).toBeCloseTo(80)
   })
 
+  it('retains connected notation/TAB barlines in strict mode while rejecting rhythm stems', () => {
+    const notation: Staff = { kind: 'notation', lines: [70, 65.75, 61.5, 57.25, 53], x1: 10, x2: 90 }
+    expect(barlineXs([{ x: 50, y1: 23.6, y2: 70 }, { x: 70, y1: 30, y2: 55 }], notation, tab, true)).toEqual([10, 50, 90])
+    const highNotation = { ...notation, lines: notation.lines.map(y => y + 30) }
+    expect(barlineXs([{ x: 50, y1: 23.6, y2: 100 }], highNotation, tab, true)).toEqual([10, 50, 90])
+  })
+
   it('rejects TAB rhythm stems that extend above the staff as barlines', () => {
     const notation: Staff = { kind: 'notation', lines: [80, 75.75, 71.5, 67.25, 63], x1: 10, x2: 90 }
     const vert = [
@@ -319,5 +326,163 @@ describe('printed outline geometry', () => {
     ]
     expect(barlineXs(vert, notation, tab, true)).toEqual([10, 50, 90])
     expect(barlineXs(vert, notation, tab)).toEqual([10, 50, 70, 90])
+  })
+})
+
+
+describe('synthetic rhythm recovery', () => {
+  const system = {
+    notation: { kind: 'notation' as const, lines: [100, 95.75, 91.5, 87.25, 83], x1: 10, x2: 150 },
+    tab: { kind: 'tab' as const, lines: [55, 48.6, 42.2, 35.8], x1: 10, x2: 150 },
+  }
+  const glyph = (str: string, x: number, y = 89.9) => ({ str, x, y, w: 5, h: 17 })
+  const beam = (x1: number, x2: number, y: number) => ({ x1, x2, y1: y, y2: y })
+
+  it.each([1, -1])('retains a short secondary beam for stem direction %s', direction => {
+    const y = 91.5 + direction * 19
+    const edges = [beam(33, 73, y), beam(68, 73, y - direction * 3.2)]
+      .flatMap(b => [b, { ...b, y1: b.y1 + 2.1, y2: b.y2 + 2.1 }])
+    const beams = pairBeamEdges(edges)
+    const stems = [33, 73].map(x => ({ x, y1: Math.min(91.5, y), y2: Math.max(91.5, y) }))
+    const beats = notationBeats([glyph('\uE0A4', 30), glyph('\uE0A4', 70)], beams, stems, [], system, 10, 150)
+    expect(beats.map(b => b.duration)).toEqual([0.5, 0.25])
+  })
+
+  it('counts single stroked beams and attached beamlets but excludes detached brackets', () => {
+    const stems = [33, 73].map(x => ({ x, y1: 91.5, y2: 112 }))
+    const beams = pairBeamEdges([beam(33, 73, 112), beam(68, 73, 108.8), beam(90, 110, 120)], stems)
+    expect(beams.map(b => b.bracket)).toEqual([false, false, true])
+    expect(notationBeats([glyph('\uE0A4', 30), glyph('\uE0A4', 70)], beams, stems, [], system, 10, 150).map(b => b.duration)).toEqual([0.5, 0.25])
+  })
+
+  it.each([1, -1])('counts three stacked stroked levels in either input order for stem direction %s', direction => {
+    const tip = 91.5 + direction * 20.5
+    const stems = [33, 73].map(x => ({ x, y1: Math.min(91.5, tip), y2: Math.max(91.5, tip) }))
+    const edges = [0, 3.2, 6.4].map(offset => beam(33, 73, tip - direction * offset))
+    for (const ordered of [edges, [...edges].reverse()]) {
+      const beams = pairBeamEdges(ordered, stems)
+      expect(beams.map(b => b.bracket)).toEqual([false, false, false])
+      expect(notationBeats([glyph('\uE0A4', 30), glyph('\uE0A4', 70)], beams, stems, [], system, 10, 150).map(b => b.duration)).toEqual([0.125, 0.125])
+    }
+  })
+
+  it('does not count ledger lines near the head as beamlets', () => {
+    const stems = [33, 73].map(x => ({ x, y1: 91.5, y2: 112 }))
+    const beams = pairBeamEdges([beam(33, 73, 112), beam(28, 35, 99)], stems)
+    expect(notationBeats([glyph('\uE0A4', 30), glyph('\uE0A4', 70)], beams, stems, [], system, 10, 150).map(b => b.duration)).toEqual([0.5, 0.5])
+  })
+
+  it('does not count short staff segments as single stroked beams', () => {
+    const stems = [33, 73].map(x => ({ x, y1: 75, y2: 96 }))
+    const beams = pairBeamEdges([beam(20, 100, 95.75)], stems)
+    const heads = [30, 70].map(x => glyph('\uE0A4', x, 73.4))
+    expect(notationBeats(heads, beams, stems, [], system, 10, 150).map(b => b.duration)).toEqual([1, 1])
+  })
+
+  it.each(['3', '5', '6'])('does not scale notes for printed measure number %s at the left barline', digit => {
+    const heads = [30, 50, 70].map(x => glyph('\uE0A4', x))
+    const stems = heads.map(h => ({ x: h.x + 3, y1: 91.5, y2: 112 }))
+    expect(notationBeats([...heads, glyph(digit, 19, 115)], [beam(33, 73, 112)], stems, [], system, 10, 150).map(b => b.duration)).toEqual([0.5, 0.5, 0.5])
+  })
+
+  it('scales only the three events centered under a digit on a continuous four-note beam', () => {
+    const heads = [30, 45, 60, 75].map(x => glyph('\uE0A4', x))
+    const stems = heads.map(h => ({ x: h.x + 3, y1: 91.5, y2: 112 }))
+    expect(notationBeats([...heads, glyph('3', 45.5, 119)], [beam(33, 78, 112)], stems, [], system, 10, 150).map(b => b.duration)).toEqual([1 / 3, 1 / 3, 1 / 3, 0.5])
+  })
+
+  it('does not borrow a rest dot or count vertically displaced staccato marks', () => {
+    const items = [glyph('\uE4E6', 30), glyph('\uE0A4', 40), glyph('\uE0A4', 70)]
+    const beats = notationBeats(items, [], [], [{ x: 38, y: 91.5 }, { x: 72, y: 99 }], system, 10, 150)
+    expect(beats.map(b => b.duration)).toEqual([0.75, 1, 1])
+  })
+
+  it('extracts steep beams and beamlets at normalized page scales', () => {
+    for (const scale of [0.7, 1, 1.5]) {
+      const coords = [[30, 70, 40, 90], [30, 72.1, 40, 92.1], [35, 75, 39, 75], [35, 77.1, 39, 77.1]]
+      const geo = extractGeometry({ fnArray: coords.map(() => OPS.constructPath), argsArray: coords.map(c => [[13, 14], c.map(n => n * scale)]) }, scale)
+      expect(pairBeamEdges(geo.beamEdges).filter(b => !b.bracket)).toHaveLength(2)
+    }
+  })
+
+  it('counts two dots while deduplicating text and path representations', () => {
+    const head = glyph('\uE0A3', 30)
+    const dots = [glyph('\uE1E7', 38, 91.5), glyph('\uE1E7', 42, 91.5)]
+    expect(notationBeats([head, ...dots], [], [], [{ x: 38.5, y: 91.5 }, { x: 42.5, y: 91.5 }], system, 10, 150)[0].duration).toBe(3.5)
+  })
+
+  it('finds rest dots across the rest extent and does not borrow a later note dot', () => {
+    const rest = { ...glyph('\uE4E6', 30, 86), restBounds: { bottom: 85, top: 98 } }
+    expect(notationBeats([rest], [], [], [{ x: 39, y: 96 }, { x: 43, y: 96 }], system, 10, 150)[0].duration).toBe(0.875)
+    const beats = notationBeats([glyph('\uE0A4', 60), glyph('\uE0A4', 70), glyph('\uE1E7', 76, 91.5)], [], [], [], system, 10, 150)
+    expect(beats.map(b => b.duration)).toEqual([1, 1.5])
+  })
+
+  it.each([['3', 3, 1 / 3], ['\uE886', 6, 1 / 3], ['5', 5, 0.4]] as const)('scales %s tuplets exactly', (digit, count, duration) => {
+    const heads = Array.from({ length: count }, (_, i) => glyph('\uE0A4', 30 + i * 12))
+    const end = 33 + (count - 1) * 12
+    const stems = heads.map(h => ({ x: h.x + 3, y1: 91.5, y2: 112 }))
+    const number = glyph(digit, (33 + end) / 2 - 2.5, 119)
+    const beats = notationBeats([...heads, number], [beam(33, end, 112)], stems, [], system, 10, 150)
+    expect(beats.map(b => b.duration)).toEqual(Array(count).fill(duration))
+  })
+
+  it('uses bracket bounds for a mixed triplet and excludes bracket rules from beam counts', () => {
+    const heads = [glyph('\uE0A4', 30), glyph('\uE0A4', 50), glyph('\uE0A3', 70), glyph('\uE0A3', 100)]
+    const beams = [
+      { ...beam(29, 37, 120), bracket: true },
+      { ...beam(44, 77, 120), bracket: true },
+    ]
+    const beats = notationBeats([...heads, glyph('3', 38, 119), glyph('\uE240', 52, 105)], beams,
+      [{ x: 33, y1: 91.5, y2: 112 }, { x: 53, y1: 91.5, y2: 112 }], [], system, 10, 150)
+    expect(beats.map(b => b.duration)).toEqual([2 / 3, 1 / 3, 4 / 3, 2])
+  })
+
+  it('does not use a centered tuplet digit as a printed bar number', () => {
+    const heads = [30, 50, 70].map(x => glyph('\uE0A4', x))
+    const items = [glyph('3', 48, 108), glyph('24', 11, 103), ...heads]
+    expect(printedMeasureNumber(items, [beam(33, 73, 112)], system, 10, 150)).toBe(24)
+    expect(printedMeasureNumber([items[0], ...heads], [beam(33, 73, 112)], system, 10, 150)).toBeUndefined()
+  })
+
+  it('ignores fret digits from adjacent systems when finding tuplets', () => {
+    const beats = notationBeats([glyph('\uE0A4', 30), { ...glyph('3', 50, 119), tabDigit: true }], [], [], [], system, 10, 150)
+    expect(beats[0].duration).toBe(1)
+  })
+
+  it('keeps a sparse TAB line supported by dense parallel neighbors', () => {
+    const dense = [75, 62.2].map(y => ({ y, x1: 20, x2: 420 }))
+    const sparse = Array.from({ length: 10 }, (_, i) => ({ y: 68.6, x1: 20 + i * 44, x2: 24 + i * 44 }))
+    expect(clusterY([...dense, ...sparse], 200, true).some(l => Math.abs(l.y - 68.6) < 1e-8)).toBe(true)
+  })
+
+  it('retains a sparse bottom TAB line supported from above', () => {
+    const dense = [81.4, 75].map(y => ({ y, x1: 20, x2: 420 }))
+    const sparse = Array.from({ length: 10 }, (_, i) => ({ y: 68.6, x1: 20 + i * 44, x2: 24 + i * 44 }))
+    expect(clusterY([...dense, ...sparse], 200, true).some(l => Math.abs(l.y - 68.6) < 1e-8)).toBe(true)
+  })
+
+  it('skips interleaved decorative rules when recovering a staff', () => {
+    const lines = [70, 63.6, 57.2, 50.8].map(y => ({ y, x1: 20, x2: 140 }))
+    const rules = [67, 61, 55].map(y => ({ y, x1: 0, x2: 160 }))
+    expect(findStaves([...lines, ...rules], 1).find(s => s.kind === 'tab')?.lines).toEqual(lines.map(l => l.y))
+  })
+})
+
+describe('fillMeasureGaps with synthetic numbering', () => {
+  const ts = { beats: 3, beatType: 4 }
+  const measures = (numbers: Array<number | undefined>): GpMeasure[] => numbers.map(number => ({
+    number, timeSignature: ts, beats: [{ duration: 3, notes: [] }],
+  }))
+  it('inserts bar-length rests only between supported runs, including sparse anchors', () => {
+    const input = measures([20, 21, undefined, 25, 26, 27])
+    const out = fillMeasureGaps(input, ts)
+    expect(out).toHaveLength(8)
+    expect(out.slice(3, 5).map(m => m.beats)).toEqual([[{ duration: 3, notes: [] }], [{ duration: 3, notes: [] }]])
+    expect(input).toHaveLength(6)
+    expect(out[5].number).toBe(25)
+  })
+  it.each([[20, 21, 40, 41, 42], [20, 21, 25, 27, 28], [20, 21, 3, 23, 24, 25], [20, 21, 19, 20, 21]])('ignores implausible or unsupported jumps: %j', (...numbers) => {
+    expect(fillMeasureGaps(measures(numbers), ts)).toHaveLength(numbers.length)
   })
 })

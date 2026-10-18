@@ -62,6 +62,7 @@ export interface GpScore {
 }
 
 interface TextItem {
+  tabDigit?: boolean
   restBounds?: { bottom: number; top: number }
   str: string
   x: number
@@ -86,6 +87,8 @@ interface BeamEdge {
 
 /** 対になった連桁。y1/y2 は左端・右端の中心線 */
 interface Beam {
+  bracket?: boolean
+  singleStroke?: boolean
   x1: number
   y1: number
   x2: number
@@ -172,7 +175,7 @@ export function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] },
       vert.push({ x: (px1 + px2) / 2, y1: Math.min(py1, py2), y2: Math.max(py1, py2) })
     }
     // 連桁は水平とは限らない。符幹より十分寝ていて、譜線より短いものだけ候補にする
-    if (dx >= 8 && dx <= 200 && dy <= dx * 0.5 && dy < 18) {
+    if (dx >= 3 && dx <= 200 && dy <= dx * 3 && dy < 40) {
       const left = px1 <= px2
       beamEdges.push({
         x1: left ? px1 : px2,
@@ -189,7 +192,7 @@ export function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] },
     const ys = pts.map(p => p[1])
     const w = Math.max(...xs) - Math.min(...xs)
     const h = Math.max(...ys) - Math.min(...ys)
-    if (w >= 1.2 && w <= 5.5 && h >= 1.0 && h <= 5.5) {
+    if (w >= 1.2 && w <= 2.8 && h >= 1.0 && h <= 2.8) {
       dots.push({ x: (Math.min(...xs) + Math.max(...xs)) / 2, y: (Math.min(...ys) + Math.max(...ys)) / 2 })
     }
   }
@@ -287,7 +290,7 @@ export function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] },
         }
       }
       flush()
-      if (subpaths === 1 && pathPoints.length) {
+      if (pathPoints.length) {
         const xs = pathPoints.map(p => p[0]), ys = pathPoints.map(p => p[1])
         const x = Math.min(...xs), y = Math.min(...ys)
         const w = Math.max(...xs) - x, h = Math.max(...ys) - y
@@ -299,6 +302,10 @@ export function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] },
           if (pathCubics >= 25 && pathStraight === 0 && h / w > 2.5) code = REST_QUARTER
           else if (pathCubics >= 15 && pathStraight <= 3) code = pathCubics < 25 ? REST_8 : pathCubics < 40 ? REST_16 : REST_32
           else if (pathCubics >= 8 && pathCubics < 15 && pathStraight <= 2 && h > 11) code = FLAG_8_UP
+        }
+        if (subpaths !== 1) {
+          code = subpaths === 2 && pathCubics >= 24 && pathCubics <= 30 && pathStraight === 4 &&
+            w >= 3 && w <= 6 && h >= 11 && h <= 18 ? FLAG_16_UP : 0
         }
         if (code) glyphs.push({ str: String.fromCodePoint(code), x, y: y + h / 2 - 1.6, w, h: 17, ...(code === REST_RECT ? { restBounds: { bottom: y, top: y + h } } : {}) })
       }
@@ -320,7 +327,7 @@ export function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] },
  * 連桁は太さ約 2.1pt の塗り矩形。辺を組にして 1 本と数える。
  * 隣の連桁とのすき間は約 1pt なので、太さ 2.1 に一番近い相手を選ぶ。
  */
-export function pairBeamEdges(edges: BeamEdge[]): Beam[] {
+export function pairBeamEdges(edges: BeamEdge[], stems: VSeg[] = []): Beam[] {
   const slope = (e: BeamEdge) => (e.y2 - e.y1) / (e.x2 - e.x1 || 1)
   const partner = new Array<number>(edges.length).fill(-1)
   for (let i = 0; i < edges.length; i++) {
@@ -361,14 +368,39 @@ export function pairBeamEdges(edges: BeamEdge[]): Beam[] {
       y2: (a.y2 + b.y2) / 2,
     })
   }
-  // 短い連桁は塗りではなく 1 本の線だけのことがある
+  // A single stroked beam must meet stem tips; detached rules are brackets.
   for (let i = 0; i < edges.length; i++) {
-    if (used.has(i) || partner[i] >= 0) continue
     const e = edges[i]
-    const len = e.x2 - e.x1
-    if (len < 10 || len > 80) continue
-    if (Math.abs(e.y2 - e.y1) / len > 0.4) continue
-    beams.push({ x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2 })
+    if (used.has(i) || partner[i] >= 0 || e.x2 - e.x1 < 4 || e.x2 - e.x1 > 100) continue
+    // Extra outlines of a filled beam are not an additional beam level.
+    if (beams.some(b => !b.bracket && Math.abs(slope(b) - slope(e)) < 0.05 &&
+      Math.min(b.x2, e.x2) - Math.max(b.x1, e.x1) >= (e.x2 - e.x1) * 0.75 &&
+      Math.abs(beamYAt(b, (e.x1 + e.x2) / 2) - (e.y1 + e.y2) / 2) < 2.85)) continue
+    if (Math.abs(slope(e)) > 0.4) { beams.push({ ...e, bracket: true }); continue }
+    const attached = stems.filter(v => (e.x2 - e.x1 > 12 || Math.min(Math.abs(v.x - e.x1), Math.abs(v.x - e.x2)) < 0.8) && v.y2 - v.y1 >= 8 && v.x >= e.x1 - 3.5 && v.x <= e.x2 + 3.5 &&
+      Math.min(Math.abs(v.y1 - beamYAt(e, v.x)), Math.abs(v.y2 - beamYAt(e, v.x))) < 3.5)
+    const tips = new Set(attached.map(v => Math.round(v.x)))
+    beams.push({ ...e, singleStroke: true, bracket: !(tips.size >= 2 || (e.x2 - e.x1 <= 12 && tips.size >= 1)) })
+  }
+  // Stroked inner levels can lie well below the stem tip. Grow each stack
+  // from an attached level, checking the stem extents as well as parallelism.
+  let promoted = true
+  while (promoted) {
+    promoted = false
+    for (const b of beams) {
+      if (!b.singleStroke || !b.bracket || Math.abs(slope(b)) > 0.4) continue
+      const supporting = stems.filter(v => v.y2 - v.y1 >= 8 &&
+        v.x >= b.x1 - 3.5 && v.x <= b.x2 + 3.5 &&
+        (b.x2 - b.x1 > 12 || Math.min(Math.abs(v.x - b.x1), Math.abs(v.x - b.x2)) < 0.8) &&
+        beamYAt(b, v.x) >= v.y1 - 3.5 && beamYAt(b, v.x) <= v.y2 + 3.5)
+      if (new Set(supporting.map(v => Math.round(v.x))).size < (b.x2 - b.x1 <= 12 ? 1 : 2)) continue
+      if (!beams.some(a => !a.bracket && Math.abs(slope(a) - slope(b)) < 0.05 &&
+        supporting.every(v => v.x >= a.x1 - 3.5 && v.x <= a.x2 + 3.5 &&
+          Math.abs(beamYAt(a, v.x) - beamYAt(b, v.x)) >= 2.85 &&
+          Math.abs(beamYAt(a, v.x) - beamYAt(b, v.x)) <= 3.5))) continue
+      b.bracket = false
+      promoted = true
+    }
   }
   return beams
 }
@@ -394,7 +426,11 @@ export function clusterY(segs: HSeg[], pageH: number, staffOnly = false): Array<
   return clusters.filter(c => {
     if (c.y < 8 || c.y > pageH - 8) return false
     const span = c.x2 - c.x1
-    return span >= 70 && c.len >= 36 && (!staffOnly || c.len >= span * 0.25)
+    const supported = [[-1, 1], [-1, -2], [1, 2]].some(offsets => offsets.every(offset => clusters.some(other =>
+      Math.abs(other.y - c.y - offset * 6.4) < 0.8 &&
+      Math.abs(other.x1 - c.x1) < 6 && Math.abs(other.x2 - c.x2) < 6 &&
+      other.len >= (other.x2 - other.x1) * 0.25)))
+    return span >= 70 && c.len >= 36 && (!staffOnly || c.len >= span * 0.25 || supported)
   })
 }
 
@@ -468,9 +504,17 @@ export function findStaves(lines: Array<{ y: number; x1: number; x2: number }>, 
   const used = new Set<number>()
 
   const take = (start: number, count: number, minGap: number, maxGap: number, kind: Staff['kind']) => {
-    if (start + count > sorted.length) return false
-    const group = sorted.slice(start, start + count)
-    if (group.some((_, i) => used.has(start + i))) return false
+    if (used.has(start)) return false
+    const indices = [start]
+    while (indices.length < count) {
+      const last = indices[indices.length - 1]
+      const next = sorted.findIndex((line, j) => j > last && !used.has(j) &&
+        sorted[last].y - line.y >= minGap && sorted[last].y - line.y <= maxGap &&
+        (Math.abs(line.x1 - sorted[start].x1) <= 6 || Math.abs(line.x2 - sorted[start].x2) <= 6))
+      if (next < 0) return false
+      indices.push(next)
+    }
+    const group = indices.map(i => sorted[i])
     const gaps: number[] = []
     for (let i = 1; i < group.length; i++) gaps.push(group[i - 1].y - group[i].y)
     if (!gaps.every(g => g >= minGap && g <= maxGap)) return false
@@ -487,7 +531,7 @@ export function findStaves(lines: Array<{ y: number; x1: number; x2: number }>, 
       x1: Math.min(...group.map(g => g.x1)),
       x2: Math.max(...group.map(g => g.x2)),
     })
-    for (let i = 0; i < count; i++) used.add(start + i)
+    for (const i of indices) used.add(i)
     return true
   }
 
@@ -499,8 +543,10 @@ export function findStaves(lines: Array<{ y: number; x1: number; x2: number }>, 
     const ref = sorted[start]
     const idxs = [start]
     while (idxs.length < 6 && last + 1 < sorted.length) {
-      const j = last + 1
-      if (used.has(j)) break
+      const j = sorted.findIndex((line, i) => i > last && !used.has(i) &&
+        sorted[last].y - line.y >= 5.4 * scale && sorted[last].y - line.y <= 7.6 * scale &&
+        (Math.abs(line.x1 - ref.x1) <= 6 || Math.abs(line.x2 - ref.x2) <= 6))
+      if (j < 0) break
       const gap = sorted[last].y - sorted[j].y
       if (gap < 5.4 * scale || gap > 7.6 * scale) break
       if (idxs.length >= 2 && Math.abs(gap - firstGap) > firstGap * 0.15) break
@@ -588,6 +634,18 @@ function verticalsOnStaff(vert: VSeg[], staff: Staff, strict = false): number[] 
 /** タブ譜を貫く縦線を小節線にする。符幹はタブまで届かない。 */
 export function barlineXs(vert: VSeg[], _notation: Staff, tab: Staff, strict = false): number[] {
   const xs = verticalsOnStaff(vert, tab, strict)
+  // A continuous connector into the paired notation staff is a barline,
+  // even though its upper end lies above TAB rhythm stems.
+  if (strict && _notation.kind === 'notation') {
+    const tabBottom = Math.min(...tab.lines)
+    const tabTop = Math.max(...tab.lines)
+    const notationBottom = Math.min(..._notation.lines)
+    const notationTop = Math.max(..._notation.lines)
+    if (notationBottom > tabTop) {
+      xs.push(...vert.filter(v => Math.abs(v.y1 - tabBottom) <= 2 &&
+        v.y2 >= notationBottom && v.y2 <= notationTop + 2).map(v => v.x))
+    }
+  }
   xs.sort((a, b) => a - b)
   const clustered: number[] = []
   for (const x of xs) {
@@ -695,14 +753,32 @@ function beamCountAt(
   const far = stemTipY + dir * 8
   const headLimit = stemBaseY + dir * 5
   const ys: number[] = []
+  const attachedLevels = beams.filter(b => !b.bracket &&
+    stemX >= b.x1 - 3.5 && stemX <= b.x2 + 3.5)
+  const reachable = new Set(attachedLevels.filter(b => !b.singleStroke || Math.abs(beamYAt(b, stemX) - stemTipY) <= 4))
+  let added = true
+  while (added) {
+    added = false
+    for (const b of attachedLevels) {
+      if (reachable.has(b)) continue
+      if ([...reachable].some(a =>
+        Math.abs((a.y2 - a.y1) / (a.x2 - a.x1 || 1) - (b.y2 - b.y1) / (b.x2 - b.x1 || 1)) < 0.05 &&
+        Math.abs(beamYAt(a, stemX) - beamYAt(b, stemX)) <= 3.5)) {
+        reachable.add(b)
+        added = true
+      }
+    }
+  }
   for (const b of beams) {
+    if (b.bracket) continue
     if (stemX < b.x1 - 3.5 || stemX > b.x2 + 3.5) continue
     const y = beamYAt(b, stemX)
+    if (b.singleStroke && !reachable.has(b)) continue
     const beyondHead = dir > 0 ? y > headLimit : y < headLimit
     const withinReach = dir > 0 ? y <= far : y >= far
     if (!beyondHead || !withinReach) continue
     // 譜線そのものは連桁にしない。譜線上に乗った短い連桁は残す
-    if (staffLines.some(ly => Math.abs(ly - y) < 0.85) && b.x2 - b.x1 > 100) continue
+    if (staffLines.some(ly => Math.abs(ly - y) < 0.85) && b.x2 - b.x1 > (b.singleStroke ? 12 : 100)) continue
     ys.push(y)
   }
   ys.sort((a, b) => b - a)
@@ -751,6 +827,66 @@ function stemFor(vert: VSeg[], head: TextItem): { x: number; tip: number; base: 
   return { x: s.x, tip, base }
 }
 
+function tupletNumber(item: TextItem): number | null {
+  const text = item.str.trim()
+  const n = /^[356]$/.test(text) ? Number(text) : cp(text) - 0xe880
+  return [3, 5, 6].includes(n) && [...text].length === 1 ? n : null
+}
+
+export function tupletGroups(items: TextItem[], beams: Beam[], system: System, x1: number, x2: number): Array<{ item: TextItem; count: number; left?: number; right?: number }> {
+  const top = system.notation.lines[0]
+  const bot = system.notation.lines[system.notation.lines.length - 1]
+  const out: ReturnType<typeof tupletGroups> = []
+  const eventXs: number[] = []
+  for (const it of items) {
+    const code = cp(it.str)
+    if ([...it.str].length !== 1 || it.y > top + 22 || it.y < bot - 16) continue
+    if (![NOTEHEAD_BLACK, NOTEHEAD_HALF, NOTEHEAD_WHOLE, NOTEHEAD_X, REST_RECT].includes(code) &&
+      !(code >= REST_WHOLE && code <= REST_32)) continue
+    if (!eventXs.some(x => Math.abs(x - it.x) < 4.5)) eventXs.push(it.x)
+  }
+  const enoughEvents = (left: number, right: number, count: number) =>
+    eventXs.filter(x => x >= left && x <= right).length >= count
+  eventXs.sort((a, b) => a - b)
+  const centeredEvents = (beam: Beam, center: number, count: number) => {
+    const xs = eventXs.filter(x => x >= beam.x1 - 6 && x <= beam.x2 + 3)
+    return xs.some((x, i) => i + count <= xs.length &&
+      Math.abs(center - (x + xs[i + count - 1]) / 2) < Math.max(5, (xs[i + count - 1] - x) * 0.23))
+  }
+  for (const item of items) {
+    const count = tupletNumber(item)
+    if (!count || item.tabDigit || item.x < x1 + 8 || item.x >= x2 - 2 || item.y > top + 40 || item.y < Math.max(bot - 40, system.tab.lines[0] + 5)) continue
+    const center = item.x + item.w / 2
+    const beam = beams.filter(b => !b.bracket &&
+      !(b.singleStroke && b.x2 - b.x1 > 12 && system.notation.lines.some(y => Math.abs(y - beamYAt(b, center)) < 0.85)) &&
+      enoughEvents(b.x1 - 6, b.x2 + 3, count) && b.x1 >= x1 - 3 && b.x2 <= x2 + 3 &&
+      centeredEvents(b, center, count) &&
+      Math.abs(item.y - beamYAt(b, center)) < 18)
+      .sort((a, b) => (b.x2 - b.x1) - (a.x2 - a.x1))[0]
+    const left = beams.filter(b => b.bracket && b.x1 >= x1 && Math.abs(b.x2 - item.x) < 9 &&
+      Math.abs(b.y2 - item.y) < 5).sort((a, b) => b.x2 - a.x2)[0]
+    const right = beams.filter(b => b.bracket && b.x2 <= x2 && Math.abs(b.x1 - (item.x + item.w)) < 9 &&
+      Math.abs(b.y1 - item.y) < 5).sort((a, b) => a.x1 - b.x1)[0]
+    if (left && right && Math.abs(left.y2 - right.y1) < 6 && enoughEvents(left.x1 - 3, right.x2, count)) {
+      out.push({ item, count, left: left.x1 - 3, right: right.x2 })
+      continue
+    }
+    // Printed bar numbers sit immediately above the staff at its left edge.
+    if (!beam) continue
+    out.push({ item, count, ...(beam ? { left: beam.x1 - 6, right: beam.x2 + 3 } : {}) })
+  }
+  return out
+}
+
+export function printedMeasureNumber(items: TextItem[], beams: Beam[], system: System, x1: number, x2: number): number | undefined {
+  const tuplets = new Set(tupletGroups(items, beams, system, x1, x2).map(g => g.item))
+  const top = system.notation.lines[0]
+  const printed = items.filter(it => /^\d{1,3}$/.test(it.str.trim()) && !tuplets.has(it) && !it.tabDigit &&
+    it.y > top - 1 && it.y < top + 28 && it.x >= x1 - 8 && it.x < x1 + (x2 - x1) * 0.45)
+    .sort((a, b) => a.x - b.x)[0]
+  return printed ? Number(printed.str) : undefined
+}
+
 export function notationBeats(
   items: TextItem[],
   beams: Beam[],
@@ -784,7 +920,7 @@ export function notationBeats(
     const a = Math.max(b.x1, x1 - 4)
     const b2 = Math.min(b.x2, x2 + 4)
     const mid = (b.y1 + b.y2) / 2
-    return b2 - a >= 8 && mid < top + 52 && mid > bot - 46
+    return b2 - a >= 3 && mid < top + 52 && mid > bot - 46
   })
 
   const flagDur = (head: TextItem): number | null => {
@@ -801,9 +937,23 @@ export function notationBeats(
 
   // 符頭の中心はベースラインのすぐ上。height はフォントのアセントなので使わない
   const headY = (head: TextItem) => head.y + 1.6
-  const hasDot = (head: TextItem) =>
-    dots.some(d => d.x > head.x + 1 && d.x - head.x < 12 && Math.abs(d.y - headY(head)) < 5) ||
-    dotMarks.some(d => d.x > head.x + 2 && d.x - head.x < 11 && Math.abs(d.y - headY(head)) < 3.2)
+  const dotCount = (head: TextItem, rest = false) => {
+    const spacing = Math.abs(top - bot) / (system.notation.lines.length - 1)
+    const low = rest ? (head.restBounds?.bottom ?? head.y - head.h * 0.25) : headY(head) - 3.2
+    const high = rest ? (head.restBounds?.top ?? head.y + head.h * 0.65) : headY(head) + 3.2
+    const nextX = Math.min(x2, ...[...heads, ...rests].filter(h => h.x > head.x + 4.5).map(h => h.x))
+    const candidates = [
+      ...dots.map(d => ({ x: d.x, y: d.y, text: true })),
+      ...dotMarks.map(d => ({ ...d, text: false })),
+    ].filter(d => d.x > head.x + Math.max(3, head.w * 0.7) && d.x - head.x < 16 && d.x < nextX &&
+      d.y >= low && d.y <= high && (rest || Math.abs(d.y - headY(head)) < spacing * 0.8))
+    const xs: number[] = []
+    for (const d of candidates.sort((a, b) => a.x - b.x)) {
+      if (!xs.some(x => Math.abs(x - d.x) < 2) && (xs.length ? d.x - xs[0] < 6 : d.x - head.x < (d.text ? 12 : 11))) xs.push(d.x)
+    }
+    return Math.min(2, xs.length)
+  }
+  const dotFactor = (n: number) => n === 2 ? 1.75 : n === 1 ? 1.5 : 1
 
   const groups: TextItem[][] = []
   const sortedHeads = [...heads].sort((a, b) => a.x - b.x)
@@ -835,7 +985,7 @@ export function notationBeats(
         confidence = 'low'
       }
     }
-    if (hasDot(head)) dur *= 1.5
+    dur *= dotFactor(dotCount(head))
     beats.push({
       x: head.x,
       y: head.y,
@@ -866,11 +1016,32 @@ export function notationBeats(
       // while half rests sit on one. Allow for stroke width and rounding.
       dur = bottomDistance <= spacing * 0.25 && bottomDistance < topDistance ? 2 : 4
     }
-    if (hasDot(r)) dur *= 1.5
+    dur *= dotFactor(dotCount(r, true))
     beats.push({ x: r.x, y: r.y, duration: dur, rest: true, dead: false, confidence: 'high' })
   }
 
   beats.sort((a, b) => a.x - b.x)
+  const assigned = new Set<RawBeat>()
+  for (const group of tupletGroups(items, localBeams, system, x1, x2)) {
+    let selected = group.left == null ? [] : beats.filter(b => b.x >= group.left! && b.x <= group.right!)
+    if (selected.length !== group.count) {
+      const center = group.item.x + group.item.w / 2
+      let best = 0
+      let distance = Infinity
+      const candidates = selected
+      if (candidates.length < group.count) continue
+      for (let i = 0; i + group.count <= candidates.length; i++) {
+        const d = Math.abs((candidates[i].x + candidates[i + group.count - 1].x) / 2 - center)
+        if (d < distance) { distance = d; best = i }
+      }
+      selected = candidates.slice(best, best + group.count)
+    }
+    for (const beat of selected) {
+      if (assigned.has(beat)) continue
+      beat.duration *= group.count === 5 ? 4 / 5 : 2 / 3
+      assigned.add(beat)
+    }
+  }
   return beats
 }
 
@@ -919,13 +1090,13 @@ interface TimedEvent {
   rest: boolean
 }
 
-/** 4分音符 = 8。4/4 は 32。付点8分は 6。 */
+/** Integer playback grid, including triplets and quintuplets. */
 function toUnits(quarters: number): number {
-  return Math.round(quarters * 8)
+  return Math.round(quarters * 960)
 }
 
 function fromUnits(units: number): number {
-  return units / 8
+  return units / 960
 }
 
 /**
@@ -1123,6 +1294,32 @@ function applyTechniques(beats: GpBeat[], marks: Array<{ x: number; kind: 'h' | 
   }
 }
 
+/** Repair only gaps supported by a consistent run on each side. */
+export function fillMeasureGaps(measures: GpMeasure[], ts: GpMeasure['timeSignature']): GpMeasure[] {
+  const clean = measures.map(m => ({ ...m }))
+  let previous = 0
+  for (const m of clean) {
+    if (m.number != null && m.number <= 6 && previous > 6) m.number = undefined
+    if (m.number != null) previous = m.number
+  }
+  const anchors = clean.flatMap((m, index) => m.number == null ? [] : [{ index, number: m.number }])
+  const insertions = new Map<number, number>()
+  for (let i = 2; i + 2 < anchors.length; i++) {
+    const left = anchors[i - 1], right = anchors[i]
+    const consistent = (a: typeof left, b: typeof left) => b.number - a.number === b.index - a.index
+    if (!consistent(anchors[i - 2], left) || !consistent(right, anchors[i + 1]) || !consistent(anchors[i + 1], anchors[i + 2])) continue
+    const missing = right.number - left.number - (right.index - left.index)
+    if (missing > 0 && missing <= 16 && right.number > 6) insertions.set(right.index, missing)
+  }
+  return clean.flatMap((m, index) => {
+    const signature = clean[index - 1]?.timeSignature ?? ts
+    const rests: GpMeasure[] = Array.from({ length: insertions.get(index) ?? 0 }, () => ({
+      beats: [{ duration: expectedQuarters(signature), notes: [] }], timeSignature: { ...signature },
+    }))
+    return [...rests, m]
+  })
+}
+
 export async function parseGuitarProPdf(data: ArrayBuffer, filename?: string): Promise<GpScore | null> {
   configurePdfjsWorker()
 
@@ -1173,20 +1370,28 @@ export async function parseGuitarProPdf(data: ArrayBuffer, filename?: string): P
     // Native exports already expose music glyphs as text.
     if (!items.some(it => cp(it.str) === NOTEHEAD_BLACK || cp(it.str) === NOTEHEAD_HALF)) items.push(...geo.glyphs)
     allItems.push(...items)
-    const beams = pairBeamEdges(geo.beamEdges)
-    const lines = clusterY(geo.horiz, pageH / scale, scale !== 1)
+    const beams = pairBeamEdges(geo.beamEdges, geo.vert)
+    // Page-edge rules are decorations, not staff lines. Remove them before
+    // clustering so they cannot shift a nearby staff line or join its ends.
+    const pageW = (page.view[2] - page.view[0]) / scale
+    const lines = clusterY(geo.horiz.filter(h => h.x1 > 8 && h.x2 < pageW - 8), pageH / scale, true)
     const staffLines = scale === 1 ? lines : lines.filter(l => {
       const widest = Math.max(...lines.filter(o => Math.abs(o.y - l.y) < 28).map(o => o.x2 - o.x1))
       return l.x2 - l.x1 >= widest * 0.95
     })
     const staves = findStaves(staffLines, 1)
     const sys = pairSystems(staves)
+    for (const item of items) {
+      if (!/^\d{1,2}$/.test(item.str.trim())) continue
+      item.tabDigit = sys.some(s => nearestLine(item.y + item.h * 0.42, s.tab.lines).dist <
+        (s.tab.lines[0] - s.tab.lines[1]) * 0.48)
+    }
     if (p === 1) {
       pageOneItems = items
       if (sys.length > 0) pageOneNotationTop = sys[0].notation.lines[0]
     }
     for (const system of sys) {
-      const bars = barlineXs(geo.vert, system.notation, system.tab, scale !== 1)
+      const bars = barlineXs(geo.vert, system.notation, system.tab, true)
       pageSystems.push({
         system,
         bars,
@@ -1212,21 +1417,12 @@ export async function parseGuitarProPdf(data: ArrayBuffer, filename?: string): P
   const measures: GpMeasure[] = []
 
   for (const ps of pageSystems) {
-    const top = ps.system.notation.lines[0]
     for (let i = 0; i < ps.bars.length - 1; i++) {
       const x1 = ps.bars[i]
       const x2 = ps.bars[i + 1]
       if (x2 - x1 < 8) continue
       const measure = buildMeasure(ps.items, ps.beams, ps.stems, ps.curves, ps.dots, ps.system, x1, x2, ts)
-      const printed = ps.items
-        .filter(it => {
-          if (!/^\d{1,3}$/.test(it.str.trim())) return false
-          if (it.y <= top - 1 || it.y >= top + 28) return false
-          // 小節番号は小節の左端（小節線のすぐ右、たまに少し左）に付く
-          return it.x >= x1 - 8 && it.x < x1 + (x2 - x1) * 0.45
-        })
-        .sort((a, b) => a.x - b.x)[0]
-      if (printed) measure.number = parseInt(printed.str, 10)
+      measure.number = printedMeasureNumber(ps.items, ps.beams, ps.system, x1, x2)
       measures.push(measure)
     }
   }
@@ -1236,7 +1432,7 @@ export async function parseGuitarProPdf(data: ArrayBuffer, filename?: string): P
   const title = filename?.replace(/\.pdf$/i, '').replace(/[_-]+/g, ' ').trim()
 
   return {
-    measures,
+    measures: fillMeasureGaps(measures, ts),
     tempo,
     title: title || undefined,
     tuning: tuning.tuning,

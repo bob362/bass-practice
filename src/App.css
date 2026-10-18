@@ -395,6 +395,12 @@
   gap: 0.5rem;
 }
 
+.youtube-volume-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .youtube-hint {
   font-size: 0.75rem;
   color: #d8b56a;

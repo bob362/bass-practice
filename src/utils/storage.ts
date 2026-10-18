@@ -125,12 +125,18 @@ export interface SongMediaSettings {
   playthroughOffsetSec: number
   originalOffsetSec: number
   playbackRate: number
+  /** 動画の音量 0-100 */
+  volume?: number
+  /** 動画をミュートするか */
+  muted?: boolean
 }
 
 export const MEDIA_STORAGE_KEY = 'bass_practice_media'
 export const SONGS_STORAGE_KEY = STORAGE_KEY
+export const DEFAULT_VIDEO_VOLUME = 100
 export const DEFAULT_MEDIA_SETTINGS: Readonly<SongMediaSettings> = {
   playthroughOffsetSec: 0, originalOffsetSec: 0, playbackRate: 1,
+  volume: 100, muted: false,
 }
 
 export function isSongMediaSettings(value: unknown): value is SongMediaSettings {
@@ -139,7 +145,10 @@ export function isSongMediaSettings(value: unknown): value is SongMediaSettings 
   return (v.playthroughUrl === undefined || typeof v.playthroughUrl === 'string') &&
     (v.originalUrl === undefined || typeof v.originalUrl === 'string') &&
     Number.isFinite(v.playthroughOffsetSec) && Number.isFinite(v.originalOffsetSec) &&
-    Number.isFinite(v.playbackRate) && v.playbackRate > 0
+    Number.isFinite(v.playbackRate) && v.playbackRate > 0 &&
+    (v.volume === undefined || (typeof v.volume === 'number' && Number.isFinite(v.volume) &&
+      v.volume >= 0 && v.volume <= 100)) &&
+    (v.muted === undefined || typeof v.muted === 'boolean')
 }
 
 export function getAllMediaSettings(): Record<string, SongMediaSettings> {
@@ -156,7 +165,11 @@ export function getSongMediaSettings(songId: string): SongMediaSettings {
 
 export function saveSongMediaSettings(songId: string, updates: Partial<SongMediaSettings>): SongMediaSettings {
   if (!songId) throw new Error('Song ID is required')
-  const settings = { ...getSongMediaSettings(songId), ...updates }
+  const normalized: Partial<SongMediaSettings> = { ...updates }
+  if (typeof normalized.volume === 'number' && Number.isFinite(normalized.volume)) {
+    normalized.volume = Math.round(Math.min(100, Math.max(0, normalized.volume)))
+  }
+  const settings = { ...getSongMediaSettings(songId), ...normalized }
   if (!isSongMediaSettings(settings)) throw new Error('Invalid media settings')
   localStorage.setItem(MEDIA_STORAGE_KEY, JSON.stringify({ ...getAllMediaSettings(), [songId]: settings }))
   return settings

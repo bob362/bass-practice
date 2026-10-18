@@ -3,6 +3,7 @@ import { loadYouTubeAPI, parseYouTubeUrl } from '../utils/youtube'
 import { tabToVideoTime } from '../utils/sync'
 import { getSongMediaSettings, saveSongMediaSettings } from '../utils/storage'
 import type { SongMediaSettings } from '../utils/storage'
+import { applyVolume, readPlayerVolume } from '../utils/youtubeVolume'
 
 type Slot = 'playthrough' | 'original'
 
@@ -18,6 +19,10 @@ const offsetKey = (slot: Slot) => slot === 'playthrough' ? 'playthroughOffsetSec
 const DRIFT_TOLERANCE_SEC = 0.3
 /** シーク直後は動画側の位置が安定しないのでドリフト判定を休む（ミリ秒） */
 const SEEK_SETTLE_MS = 1200
+/** YouTube側の音量変更を取り込む間隔（ミリ秒） */
+const VOLUME_POLL_MS = 1000
+/** アプリが音量を設定した直後はgetVolumeが古い値を返すことがあるので取り込みを休む（ミリ秒） */
+const VOLUME_SETTLE_MS = 1500
 
 export type PositionListener = (tabSec: number, isSeek: boolean) => void
 
@@ -53,10 +58,16 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
   const offsetSec = settings[offsetKey(slot)]
   const video = parseYouTubeUrl(url)
   const videoId = video?.videoId ?? null
+  const volume = settings.volume ?? 100
+  const muted = settings.muted ?? false
 
   // 最新値をイベントハンドラから参照するためのref
   const syncRef = useRef({ syncEnabled, offsetSec, tempoPercent, playbackRate: settings.playbackRate, isTabPlaying })
   syncRef.current = { syncEnabled, offsetSec, tempoPercent, playbackRate: settings.playbackRate, isTabPlaying }
+  // 最新の音量設定（ポーリングやonReadyから参照。変更時は即座に更新して書き込みループを防ぐ）
+  const volumeRef = useRef({ volume, muted })
+  volumeRef.current = { volume, muted }
+  const lastVolumeAppliedAt = useRef(0)
 
   useEffect(() => {
     const loaded = getSongMediaSettings(songId ?? '')
@@ -106,6 +117,8 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
             readyRef.current = true
             setIsPlayerReady(true)
             event.target.setPlaybackRate(syncRef.current.playbackRate)
+            applyVolume(event.target, volumeRef.current.volume, volumeRef.current.muted)
+            lastVolumeAppliedAt.current = performance.now()
           },
           onStateChange: event => {
             if (!cancelled) setIsVideoPlaying(event.data === YTApi.PlayerState.PLAYING)
@@ -130,6 +143,42 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
   useEffect(() => {
     if (isPlayerReady) playerRef.current?.setPlaybackRate(settings.playbackRate)
   }, [settings.playbackRate, isPlayerReady])
+
+  // 音量・ミュートをプレイヤーに反映
+  useEffect(() => {
+    if (!isPlayerReady || !playerRef.current) return
+    applyVolume(playerRef.current, volume, muted)
+    lastVolumeAppliedAt.current = performance.now()
+  }, [volume, muted, isPlayerReady])
+
+  // YouTube側のコントロールで変更された音量を取り込む
+  useEffect(() => {
+    if (!isPlayerReady || !songId) return
+    const id = window.setInterval(() => {
+      const player = playerRef.current
+      if (!readyRef.current || !player) return
+      if (performance.now() - lastVolumeAppliedAt.current < VOLUME_SETTLE_MS) return
+      const r = readPlayerVolume(player)
+      if (!r) return
+      const latest = volumeRef.current
+      if (r.volume !== latest.volume || r.muted !== latest.muted) {
+        volumeRef.current = r
+        update({ volume: r.volume, muted: r.muted })
+      }
+    }, VOLUME_POLL_MS)
+    return () => window.clearInterval(id)
+  }, [isPlayerReady, songId, update])
+
+  const handleVolumeChange = (v: number) => {
+    const nextMuted = muted && v === 0 ? true : false
+    volumeRef.current = { volume: v, muted: nextMuted }
+    update({ volume: v, muted: nextMuted })
+  }
+
+  const handleToggleMute = () => {
+    volumeRef.current = { volume, muted: !muted }
+    update({ muted: !muted })
+  }
 
   const expectedVideoSec = useCallback((tabSec: number) => {
     const { offsetSec, tempoPercent, playbackRate } = syncRef.current
@@ -325,6 +374,34 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
                 <button className="link-button" onClick={handleMatchTempo}>テンポに合わせる</button>
               </div>
             )}
+          </div>
+
+          <div className="slider-container">
+            <div className="slider-label">
+              <span>動画の音量</span>
+              <span className="youtube-volume-value">
+                <span>{muted ? 'ミュート' : `${volume}%`}</span>
+                <button
+                  type="button"
+                  className="button button-secondary button-small"
+                  onClick={handleToggleMute}
+                  aria-pressed={muted}
+                  aria-label={muted ? 'ミュート解除' : 'ミュート'}
+                >
+                  {muted ? '🔇' : '🔊'}
+                </button>
+              </span>
+            </div>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              value={volume}
+              onChange={e => handleVolumeChange(Number(e.target.value))}
+              aria-label="動画の音量"
+              className="slider"
+            />
           </div>
 
           <div className="youtube-offset-row">

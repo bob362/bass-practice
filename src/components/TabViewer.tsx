@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
 import { base64ToPdfBlob } from '../utils/storage'
+import { configurePdfjsWorker, pdfDocumentParams } from '../utils/pdfjsConfig'
 import { listSections, updateSectionTempo, upsertSection } from '../utils/progress'
 import type { PracticeSection } from '../utils/progress'
 import { usePracticeTimer } from '../hooks/usePracticeTimer'
@@ -22,7 +23,7 @@ declare global {
   }
 }
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs`
+configurePdfjsWorker()
 
 interface TabViewerProps {
   filePath: string | ArrayBuffer
@@ -348,7 +349,7 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
     try {
       const blob = base64ToPdfBlob(base64Data)
       const arrayBuffer = await blob.arrayBuffer()
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+      const pdf = await pdfjsLib.getDocument(pdfDocumentParams(arrayBuffer)).promise
       const page = await pdf.getPage(1)
       const viewport = page.getViewport({ scale: 1.0 })
 

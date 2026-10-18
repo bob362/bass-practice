@@ -1,7 +1,9 @@
 import * as pdfjsLib from 'pdfjs-dist'
+import { configurePdfjsWorker, pdfDocumentParams } from './pdfjsConfig'
+import { parseTuningText } from './tuningText'
 
 /**
- * Guitar Pro / Songsterr 系のテキストPDF（標準記譜＋4線タブ）を読む。
+ * Guitar Pro / Songsterr 系のテキストPDF（標準記譜＋4〜6線タブ）を読む。
  * 弦の割り当てはタブの譜線Y座標、小節は小節線、音価は符頭・連桁・旗・休符から取る。
  * alphaTab の弦番号は 1 が一番低い弦（タブの一番下）。
  */
@@ -10,6 +12,7 @@ const NOTEHEAD_BLACK = 0xe0a4
 const NOTEHEAD_HALF = 0xe0a3
 const NOTEHEAD_WHOLE = 0xe0a2
 const NOTEHEAD_X = 0xe0a9
+const REST_RECT = 0xf0000
 const REST_WHOLE = 0xe4e3
 const REST_HALF = 0xe4e4
 const REST_QUARTER = 0xe4e5
@@ -59,6 +62,8 @@ export interface GpScore {
 }
 
 interface TextItem {
+  tabDigit?: boolean
+  restBounds?: { bottom: number; top: number }
   str: string
   x: number
   y: number
@@ -82,6 +87,8 @@ interface BeamEdge {
 
 /** 対になった連桁。y1/y2 は左端・右端の中心線 */
 interface Beam {
+  bracket?: boolean
+  singleStroke?: boolean
   x1: number
   y1: number
   x2: number
@@ -105,14 +112,14 @@ interface Dot {
   y: number
 }
 
-interface Staff {
+export interface Staff {
   lines: number[] // top → bottom
   kind: 'tab' | 'notation'
   x1: number
   x2: number
 }
 
-interface System {
+export interface System {
   notation: Staff
   tab: Staff
 }
@@ -138,21 +145,23 @@ function applyPt(m: number[], x: number, y: number): [number, number] {
   return [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]]
 }
 
-function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] }): {
+export function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] }, scale = 1): {
   horiz: HSeg[]
   vert: VSeg[]
   curves: Curve[]
   dots: Dot[]
   beamEdges: BeamEdge[]
+  glyphs: TextItem[]
 } {
   const OPS = pdfjsLib.OPS
-  let ctm = [1, 0, 0, 1, 0, 0]
+  let ctm = [1 / scale, 0, 0, 1 / scale, 0, 0]
   const stack: number[][] = []
   const horiz: HSeg[] = []
   const vert: VSeg[] = []
   const curves: Curve[] = []
   const dots: Dot[] = []
   const beamEdges: BeamEdge[] = []
+  const glyphs: TextItem[] = []
 
   const pushSeg = (x1: number, y1: number, x2: number, y2: number) => {
     const [px1, py1] = applyPt(ctm, x1, y1)
@@ -166,7 +175,7 @@ function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] }): {
       vert.push({ x: (px1 + px2) / 2, y1: Math.min(py1, py2), y2: Math.max(py1, py2) })
     }
     // 連桁は水平とは限らない。符幹より十分寝ていて、譜線より短いものだけ候補にする
-    if (dx >= 8 && dx <= 200 && dy <= dx * 0.5 && dy < 18) {
+    if (dx >= 3 && dx <= 200 && dy <= dx * 3 && dy < 40) {
       const left = px1 <= px2
       beamEdges.push({
         x1: left ? px1 : px2,
@@ -183,7 +192,7 @@ function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] }): {
     const ys = pts.map(p => p[1])
     const w = Math.max(...xs) - Math.min(...xs)
     const h = Math.max(...ys) - Math.min(...ys)
-    if (w >= 1.2 && w <= 5.5 && h >= 1.0 && h <= 5.5) {
+    if (w >= 1.2 && w <= 2.8 && h >= 1.0 && h <= 2.8) {
       dots.push({ x: (Math.min(...xs) + Math.max(...xs)) / 2, y: (Math.min(...ys) + Math.max(...ys)) / 2 })
     }
   }
@@ -201,24 +210,52 @@ function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] }): {
       let cx = 0
       let cy = 0
       let sub: Array<[number, number]> = []
-      const flush = () => {
+      let controls: Array<[number, number]> = []
+      let cubics = 0
+      let straight = 0
+      const pathPoints: Array<[number, number]> = []
+      let pathCubics = 0
+      let pathStraight = 0
+      let subpaths = 0
+      const contours: Array<{ x: number; y: number; w: number; h: number }> = []
+      const flush = (closed = false) => {
         considerDot(sub)
+        pathPoints.push(...controls)
+        if ([4, 6, 8, 10].includes(cubics) && straight === 0 && controls.length) {
+          const xs = controls.map(p => p[0]), ys = controls.map(p => p[1])
+          const x = Math.min(...xs), y = Math.min(...ys)
+          const w = Math.max(...xs) - x, h = Math.max(...ys) - y
+          // Printed music fonts may be outlines rather than text. An oval
+          // notehead has four cubic sides; retain its inner contour as a hole.
+          if (w > 0 && w <= 9 && h > 0 && h <= 5.5 && (closed || (w >= 3 && h >= 1.5))) contours.push({ x, y, w, h })
+        }
         sub = []
+        controls = []
+        cubics = 0
+        straight = 0
       }
       for (const o of ops) {
         if (o === 13) {
+          subpaths++
           flush()
           cx = coords[k++]
           cy = coords[k++]
           sub.push(applyPt(ctm, cx, cy))
+          controls.push(applyPt(ctm, cx, cy))
         } else if (o === 14) {
+          straight++
+          pathStraight++
           const x2 = coords[k++]
           const y2 = coords[k++]
           pushSeg(cx, cy, x2, y2)
           cx = x2
           cy = y2
           sub.push(applyPt(ctm, cx, cy))
+          controls.push(applyPt(ctm, cx, cy))
         } else if (o === 15) {
+          cubics++
+          pathCubics++
+          controls.push(applyPt(ctm, coords[k], coords[k + 1]), applyPt(ctm, coords[k + 2], coords[k + 3]))
           k += 4
           const x3 = coords[k++]
           const y3 = coords[k++]
@@ -230,13 +267,14 @@ function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] }): {
           cx = x3
           cy = y3
           sub.push([qx, qy])
+          controls.push([qx, qy])
         } else if (o === 16 || o === 17) {
           k += 2
           cx = coords[k++]
           cy = coords[k++]
           sub.push(applyPt(ctm, cx, cy))
         } else if (o === 18) {
-          flush()
+          flush(true)
         } else if (o === 19) {
           const x = coords[k++]
           const y = coords[k++]
@@ -252,16 +290,44 @@ function extractGeometry(op: { fnArray: number[]; argsArray: unknown[] }): {
         }
       }
       flush()
+      if (pathPoints.length) {
+        const xs = pathPoints.map(p => p[0]), ys = pathPoints.map(p => p[1])
+        const x = Math.min(...xs), y = Math.min(...ys)
+        const w = Math.max(...xs) - x, h = Math.max(...ys) - y
+        let code = 0
+        // Rounded rectangular rests, zigzag quarter rests, hooked rests and
+        // flags have distinct contour complexity and staff-relative bounds.
+        if (pathStraight === 4 && pathCubics === 4 && w >= 4 && w <= 6 && h >= 1.5 && h < 3) code = REST_RECT
+        else if (w >= 3 && w <= 7 && h >= 6 && h <= 18) {
+          if (pathCubics >= 25 && pathStraight === 0 && h / w > 2.5) code = REST_QUARTER
+          else if (pathCubics >= 15 && pathStraight <= 3) code = pathCubics < 25 ? REST_8 : pathCubics < 40 ? REST_16 : REST_32
+          else if (pathCubics >= 8 && pathCubics < 15 && pathStraight <= 2 && h > 11) code = FLAG_8_UP
+        }
+        if (subpaths !== 1) {
+          code = subpaths === 2 && pathCubics >= 24 && pathCubics <= 30 && pathStraight === 4 &&
+            w >= 3 && w <= 6 && h >= 11 && h <= 18 ? FLAG_16_UP : 0
+        }
+        if (code) glyphs.push({ str: String.fromCodePoint(code), x, y: y + h / 2 - 1.6, w, h: 17, ...(code === REST_RECT ? { restBounds: { bottom: y, top: y + h } } : {}) })
+      }
+      for (const c of contours) {
+        if (c.w < 3 || c.h < 1.5) continue
+        if (contours.some(o => o !== c && o.x <= c.x && o.y <= c.y && o.w > c.w && o.h > c.h)) continue
+        const hollow = contours.some(o => o !== c && o.x > c.x && o.x + o.w < c.x + c.w && o.y >= c.y && o.y + o.h <= c.y + c.h)
+        glyphs.push({ str: String.fromCodePoint(hollow ? (c.w > 6 ? NOTEHEAD_WHOLE : NOTEHEAD_HALF) : NOTEHEAD_BLACK), x: c.x, y: c.y + c.h / 2 - 1.6, w: c.w, h: 17 })
+      }
     }
   }
-  return { horiz, vert, curves, dots, beamEdges }
+  // Oval noteheads must not also act as augmentation dots.
+  const dotMarks = dots.filter(d => !glyphs.some(h =>
+    Math.abs(d.x - h.x - h.w / 2) < 0.1 && Math.abs(d.y - h.y - 1.6) < 0.1))
+  return { horiz, vert, curves, dots: dotMarks, beamEdges, glyphs }
 }
 
 /**
  * 連桁は太さ約 2.1pt の塗り矩形。辺を組にして 1 本と数える。
  * 隣の連桁とのすき間は約 1pt なので、太さ 2.1 に一番近い相手を選ぶ。
  */
-function pairBeamEdges(edges: BeamEdge[]): Beam[] {
+export function pairBeamEdges(edges: BeamEdge[], stems: VSeg[] = []): Beam[] {
   const slope = (e: BeamEdge) => (e.y2 - e.y1) / (e.x2 - e.x1 || 1)
   const partner = new Array<number>(edges.length).fill(-1)
   for (let i = 0; i < edges.length; i++) {
@@ -302,19 +368,44 @@ function pairBeamEdges(edges: BeamEdge[]): Beam[] {
       y2: (a.y2 + b.y2) / 2,
     })
   }
-  // 短い連桁は塗りではなく 1 本の線だけのことがある
+  // A single stroked beam must meet stem tips; detached rules are brackets.
   for (let i = 0; i < edges.length; i++) {
-    if (used.has(i) || partner[i] >= 0) continue
     const e = edges[i]
-    const len = e.x2 - e.x1
-    if (len < 10 || len > 80) continue
-    if (Math.abs(e.y2 - e.y1) / len > 0.4) continue
-    beams.push({ x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2 })
+    if (used.has(i) || partner[i] >= 0 || e.x2 - e.x1 < 4 || e.x2 - e.x1 > 100) continue
+    // Extra outlines of a filled beam are not an additional beam level.
+    if (beams.some(b => !b.bracket && Math.abs(slope(b) - slope(e)) < 0.05 &&
+      Math.min(b.x2, e.x2) - Math.max(b.x1, e.x1) >= (e.x2 - e.x1) * 0.75 &&
+      Math.abs(beamYAt(b, (e.x1 + e.x2) / 2) - (e.y1 + e.y2) / 2) < 2.85)) continue
+    if (Math.abs(slope(e)) > 0.4) { beams.push({ ...e, bracket: true }); continue }
+    const attached = stems.filter(v => (e.x2 - e.x1 > 12 || Math.min(Math.abs(v.x - e.x1), Math.abs(v.x - e.x2)) < 0.8) && v.y2 - v.y1 >= 8 && v.x >= e.x1 - 3.5 && v.x <= e.x2 + 3.5 &&
+      Math.min(Math.abs(v.y1 - beamYAt(e, v.x)), Math.abs(v.y2 - beamYAt(e, v.x))) < 3.5)
+    const tips = new Set(attached.map(v => Math.round(v.x)))
+    beams.push({ ...e, singleStroke: true, bracket: !(tips.size >= 2 || (e.x2 - e.x1 <= 12 && tips.size >= 1)) })
+  }
+  // Stroked inner levels can lie well below the stem tip. Grow each stack
+  // from an attached level, checking the stem extents as well as parallelism.
+  let promoted = true
+  while (promoted) {
+    promoted = false
+    for (const b of beams) {
+      if (!b.singleStroke || !b.bracket || Math.abs(slope(b)) > 0.4) continue
+      const supporting = stems.filter(v => v.y2 - v.y1 >= 8 &&
+        v.x >= b.x1 - 3.5 && v.x <= b.x2 + 3.5 &&
+        (b.x2 - b.x1 > 12 || Math.min(Math.abs(v.x - b.x1), Math.abs(v.x - b.x2)) < 0.8) &&
+        beamYAt(b, v.x) >= v.y1 - 3.5 && beamYAt(b, v.x) <= v.y2 + 3.5)
+      if (new Set(supporting.map(v => Math.round(v.x))).size < (b.x2 - b.x1 <= 12 ? 1 : 2)) continue
+      if (!beams.some(a => !a.bracket && Math.abs(slope(a) - slope(b)) < 0.05 &&
+        supporting.every(v => v.x >= a.x1 - 3.5 && v.x <= a.x2 + 3.5 &&
+          Math.abs(beamYAt(a, v.x) - beamYAt(b, v.x)) >= 2.85 &&
+          Math.abs(beamYAt(a, v.x) - beamYAt(b, v.x)) <= 3.5))) continue
+      b.bracket = false
+      promoted = true
+    }
   }
   return beams
 }
 
-function clusterY(segs: HSeg[], pageH: number): Array<{ y: number; x1: number; x2: number }> {
+export function clusterY(segs: HSeg[], pageH: number, staffOnly = false): Array<{ y: number; x1: number; x2: number }> {
   const sorted = [...segs].sort((a, b) => b.y - a.y)
   const clusters: Array<{ y: number; x1: number; x2: number; n: number; len: number }> = []
   for (const s of sorted) {
@@ -324,7 +415,9 @@ function clusterY(segs: HSeg[], pageH: number): Array<{ y: number; x1: number; x
       clusters.push(c)
     }
     c.n++
-    c.y = (c.y * (c.n - 1) + s.y) / c.n
+    c.y = staffOnly
+      ? (c.y * c.len + s.y * (s.x2 - s.x1)) / (c.len + s.x2 - s.x1)
+      : (c.y * (c.n - 1) + s.y) / c.n
     c.x1 = Math.min(c.x1, s.x1)
     c.x2 = Math.max(c.x2, s.x2)
     c.len += s.x2 - s.x1
@@ -333,15 +426,76 @@ function clusterY(segs: HSeg[], pageH: number): Array<{ y: number; x1: number; x
   return clusters.filter(c => {
     if (c.y < 8 || c.y > pageH - 8) return false
     const span = c.x2 - c.x1
-    return span >= 70 && c.len >= 36
+    const supported = [[-1, 1], [-1, -2], [1, 2]].some(offsets => offsets.every(offset => clusters.some(other =>
+      Math.abs(other.y - c.y - offset * 6.4) < 0.8 &&
+      Math.abs(other.x1 - c.x1) < 6 && Math.abs(other.x2 - c.x2) < 6 &&
+      other.len >= (other.x2 - other.x1) * 0.25)))
+    return span >= 70 && c.len >= 36 && (!staffOnly || c.len >= span * 0.25 || supported)
   })
 }
 
-function findStaves(lines: Array<{ y: number; x1: number; x2: number }>): Staff[] {
+/** Remove short beam/ledger clusters before estimating a non-native page size. */
+export function pageStaffScale(lines: HSeg[]): number {
+  const wide = lines.filter(l => {
+    const widest = Math.max(...lines.filter(o => Math.abs(o.y - l.y) < 45).map(o => o.x2 - o.x1))
+    return l.x2 - l.x1 >= widest * 0.95
+  })
+  const scale = staffScale(wide)
+  if (scale !== 1) return scale
+  // A TAB-only print has no five-line staff to use as a reference.
+  const gaps: number[] = []
+  const sorted = [...wide].sort((a, b) => b.y - a.y)
+  for (let i = 0; i + 3 < sorted.length; i++) {
+    const run = sorted.slice(i, i + 4)
+    const gap = (run[0].y - run[3].y) / 3
+    if (gap <= 8.5 || gap > 16) continue
+    if (run.some((l, j) => j > 0 && Math.abs(run[j - 1].y - l.y - gap) > gap * 0.1)) continue
+    if (run.some(l => Math.abs(l.x1 - run[0].x1) > 6 && Math.abs(l.x2 - run[0].x2) > 6)) continue
+    gaps.push(gap / 6.4)
+  }
+  return gaps.length ? gaps.sort((a, b) => a - b)[Math.floor(gaps.length / 2)] : 1
+}
+
+// 五線と直下のタブの間隔比からページ倍率を求める
+export function staffScale(lines: Array<{ y: number; x1: number; x2: number }>): number {
+  const sorted = [...lines].sort((a, b) => b.y - a.y)
+  const recorded: number[] = []
+  for (let i = 0; i + 5 <= sorted.length; i++) {
+    const group = sorted.slice(i, i + 5)
+    const ref = group[0]
+    if (group.some(l => Math.abs(l.x1 - ref.x1) > 6 || Math.abs(l.x2 - ref.x2) > 6)) continue
+    const gaps = group.slice(1).map((l, j) => group[j].y - l.y)
+    const gN = gaps.reduce((sum, gap) => sum + gap, 0) / 4
+    if (gN < 3.4 || gN > 8.5 || gaps.some(gap => Math.abs(gap - gN) > gN * 0.1)) continue
+    // 両端が異なる連桁などは飛ばす
+    const below = sorted.slice(i + 5).filter(l =>
+      Math.abs(l.x1 - ref.x1) <= 6 || Math.abs(l.x2 - ref.x2) <= 6)
+    if (below.length < 4) continue
+    const distance = group[4].y - below[0].y
+    if (distance < 2 * gN || distance > 12 * gN) continue
+    const gT = below[0].y - below[1].y
+    if (gT / gN < 1.3 || gT / gN > 1.8) continue
+    let count = 2
+    while (count < below.length) {
+      const gap = below[count - 1].y - below[count].y
+      if (Math.abs(gap - gT) > gT * 0.1) break
+      count++
+    }
+    if (count >= 4) recorded.push(gN)
+  }
+  if (recorded.length === 0) return 1
+  recorded.sort((a, b) => a - b)
+  const mid = Math.floor(recorded.length / 2)
+  const median = recorded.length % 2 ? recorded[mid] : (recorded[mid - 1] + recorded[mid]) / 2
+  const k = median / 4.25
+  return Math.abs(k - 1) < 0.15 ? 1 : Math.max(0.5, Math.min(2.5, k))
+}
+
+export function findStaves(lines: Array<{ y: number; x1: number; x2: number }>, scale = staffScale(lines)): Staff[] {
   // 同じ高さ帯に段いっぱいの譜線があるとき、1小節分の連桁は捨てる
   const filtered = lines.filter(line => {
     const span = line.x2 - line.x1
-    const neighbors = lines.filter(o => Math.abs(o.y - line.y) < 28)
+    const neighbors = lines.filter(o => Math.abs(o.y - line.y) < 28 * scale)
     const widest = Math.max(...neighbors.map(o => o.x2 - o.x1))
     return span >= widest * 0.72
   })
@@ -350,9 +504,17 @@ function findStaves(lines: Array<{ y: number; x1: number; x2: number }>): Staff[
   const used = new Set<number>()
 
   const take = (start: number, count: number, minGap: number, maxGap: number, kind: Staff['kind']) => {
-    if (start + count > sorted.length) return false
-    const group = sorted.slice(start, start + count)
-    if (group.some((_, i) => used.has(start + i))) return false
+    if (used.has(start)) return false
+    const indices = [start]
+    while (indices.length < count) {
+      const last = indices[indices.length - 1]
+      const next = sorted.findIndex((line, j) => j > last && !used.has(j) &&
+        sorted[last].y - line.y >= minGap && sorted[last].y - line.y <= maxGap &&
+        (Math.abs(line.x1 - sorted[start].x1) <= 6 || Math.abs(line.x2 - sorted[start].x2) <= 6))
+      if (next < 0) return false
+      indices.push(next)
+    }
+    const group = indices.map(i => sorted[i])
     const gaps: number[] = []
     for (let i = 1; i < group.length; i++) gaps.push(group[i - 1].y - group[i].y)
     if (!gaps.every(g => g >= minGap && g <= maxGap)) return false
@@ -369,20 +531,57 @@ function findStaves(lines: Array<{ y: number; x1: number; x2: number }>): Staff[
       x1: Math.min(...group.map(g => g.x1)),
       x2: Math.max(...group.map(g => g.x2)),
     })
-    for (let i = 0; i < count; i++) used.add(start + i)
+    for (const i of indices) used.add(i)
     return true
+  }
+
+  // 端片方/両方 - 実際の譜線は左右端の少なくとも片方を共有する（もう一方は文字や図形に隠れることがある）。
+  // 梁や括弧の迷線は両端とも異なるので弾ける
+  const tryTabRun = (start: number) => {
+    let last = start
+    let firstGap = 0
+    const ref = sorted[start]
+    const idxs = [start]
+    while (idxs.length < 6 && last + 1 < sorted.length) {
+      const j = sorted.findIndex((line, i) => i > last && !used.has(i) &&
+        sorted[last].y - line.y >= 5.4 * scale && sorted[last].y - line.y <= 7.6 * scale &&
+        (Math.abs(line.x1 - ref.x1) <= 6 || Math.abs(line.x2 - ref.x2) <= 6))
+      if (j < 0) break
+      const gap = sorted[last].y - sorted[j].y
+      if (gap < 5.4 * scale || gap > 7.6 * scale) break
+      if (idxs.length >= 2 && Math.abs(gap - firstGap) > firstGap * 0.15) break
+      if (Math.abs(sorted[j].x1 - ref.x1) > 6 && Math.abs(sorted[j].x2 - ref.x2) > 6) break
+      if (idxs.length === 1) firstGap = gap
+      idxs.push(j)
+      last = j
+    }
+    if (idxs.length < 4) return
+    const group = idxs.map(i2 => sorted[i2])
+    const x1 = Math.max(...group.map(g => g.x1))
+    const x2 = Math.min(...group.map(g => g.x2))
+    if (x2 - x1 < 60) return
+    const spans = group.map(g => g.x2 - g.x1)
+    const widest = Math.max(...spans)
+    if (spans.some(s => s < widest * 0.55)) return
+    staves.push({
+      lines: group.map(g => g.y),
+      kind: 'tab',
+      x1: Math.min(...group.map(g => g.x1)),
+      x2: Math.max(...group.map(g => g.x2)),
+    })
+    for (const i2 of idxs) used.add(i2)
   }
 
   for (let i = 0; i < sorted.length; i++) {
     if (used.has(i)) continue
     // 五線は約4.2pt、タブは約6.4pt。連桁を混ぜないよう間隔を狭く見る
-    if (take(i, 5, 3.4, 5.3, 'notation')) continue
-    if (take(i, 4, 5.4, 7.6, 'tab')) continue
+    if (take(i, 5, 3.4 * scale, 5.3 * scale, 'notation')) continue
+    tryTabRun(i)
   }
   return staves
 }
 
-function pairSystems(staves: Staff[]): System[] {
+export function pairSystems(staves: Staff[]): System[] {
   const systems: System[] = []
   const notations = staves.filter(s => s.kind === 'notation')
   const used = new Set<Staff>()
@@ -415,7 +614,7 @@ function pairSystems(staves: Staff[]): System[] {
   return systems
 }
 
-function verticalsOnStaff(vert: VSeg[], staff: Staff): number[] {
+function verticalsOnStaff(vert: VSeg[], staff: Staff, strict = false): number[] {
   const top = staff.lines[0]
   const bot = staff.lines[staff.lines.length - 1]
   const need = (top - bot) * 0.62
@@ -424,6 +623,8 @@ function verticalsOnStaff(vert: VSeg[], staff: Staff): number[] {
     if (v.x < staff.x1 - 4 || v.x > staff.x2 + 8) continue
     const height = v.y2 - v.y1
     if (height > 60) continue
+    // TAB rhythm stems can span most of the staff but extend above it.
+    if (strict && (v.y2 > top + 2 || v.y1 < bot - 2 || height < (top - bot) * 0.9)) continue
     const overlap = Math.min(v.y2, top + 1.5) - Math.max(v.y1, bot - 1.5)
     if (overlap >= need) xs.push(v.x)
   }
@@ -431,8 +632,20 @@ function verticalsOnStaff(vert: VSeg[], staff: Staff): number[] {
 }
 
 /** タブ譜を貫く縦線を小節線にする。符幹はタブまで届かない。 */
-function barlineXs(vert: VSeg[], _notation: Staff, tab: Staff): number[] {
-  const xs = verticalsOnStaff(vert, tab)
+export function barlineXs(vert: VSeg[], _notation: Staff, tab: Staff, strict = false): number[] {
+  const xs = verticalsOnStaff(vert, tab, strict)
+  // A continuous connector into the paired notation staff is a barline,
+  // even though its upper end lies above TAB rhythm stems.
+  if (strict && _notation.kind === 'notation') {
+    const tabBottom = Math.min(...tab.lines)
+    const tabTop = Math.max(...tab.lines)
+    const notationBottom = Math.min(..._notation.lines)
+    const notationTop = Math.max(..._notation.lines)
+    if (notationBottom > tabTop) {
+      xs.push(...vert.filter(v => Math.abs(v.y1 - tabBottom) <= 2 &&
+        v.y2 >= notationBottom && v.y2 <= notationTop + 2).map(v => v.x))
+    }
+  }
   xs.sort((a, b) => a - b)
   const clustered: number[] = []
   for (const x of xs) {
@@ -458,14 +671,25 @@ function nearestLine(yCenter: number, lines: number[]): { index: number; dist: n
   return { index: best, dist }
 }
 
-function detectTuning(items: TextItem[]): { tuning: string; label: string } {
-  const text = items.map(i => i.str).join(' ')
-  if (/drop(?:ped)?\s*d/i.test(text) || /=\s*D\b/.test(text)) {
-    return { tuning: 'D1 A1 D2 G2', label: 'ドロップD' }
+/**
+ * ヘッダー領域のテキスト項目を ', '= F' の式に組み立てる。
+ * Guitar Pro の SMuFL 記号（弦番号円 Digital・臨時記号）を通常文字に置き換える。
+ */
+export function tuningHeaderText(items: Array<{ str: string }>): string {
+  const parts: string[] = []
+  for (const it of items) {
+    let s = ''
+    for (const ch of it.str) {
+      const c = ch.codePointAt(0) ?? 0
+      if (c >= 0xe834 && c <= 0xe839) s += ` (${c - 0xe833}) `  // 弦番号。U+E834 = 弦1（最高音）
+      else if (c === 0xe260) s += ' b '
+      else if (c === 0xe262) s += ' # '
+      else if (c >= 0xe000 && c <= 0xf8ff) continue  // その他の私用領域の音楽グリフは捨てる
+      else s += ch
+    }
+    parts.push(s)
   }
-  if (/drop\s*c/i.test(text)) return { tuning: 'C1 G1 C2 F2', label: 'ドロップC' }
-  if (/standard/i.test(text)) return { tuning: 'E1 A1 D2 G2', label: 'スタンダード' }
-  return { tuning: 'E1 A1 D2 G2', label: 'スタンダード' }
+  return parts.join(' ')
 }
 
 function detectTempo(items: TextItem[]): number {
@@ -529,14 +753,32 @@ function beamCountAt(
   const far = stemTipY + dir * 8
   const headLimit = stemBaseY + dir * 5
   const ys: number[] = []
+  const attachedLevels = beams.filter(b => !b.bracket &&
+    stemX >= b.x1 - 3.5 && stemX <= b.x2 + 3.5)
+  const reachable = new Set(attachedLevels.filter(b => !b.singleStroke || Math.abs(beamYAt(b, stemX) - stemTipY) <= 4))
+  let added = true
+  while (added) {
+    added = false
+    for (const b of attachedLevels) {
+      if (reachable.has(b)) continue
+      if ([...reachable].some(a =>
+        Math.abs((a.y2 - a.y1) / (a.x2 - a.x1 || 1) - (b.y2 - b.y1) / (b.x2 - b.x1 || 1)) < 0.05 &&
+        Math.abs(beamYAt(a, stemX) - beamYAt(b, stemX)) <= 3.5)) {
+        reachable.add(b)
+        added = true
+      }
+    }
+  }
   for (const b of beams) {
+    if (b.bracket) continue
     if (stemX < b.x1 - 3.5 || stemX > b.x2 + 3.5) continue
     const y = beamYAt(b, stemX)
+    if (b.singleStroke && !reachable.has(b)) continue
     const beyondHead = dir > 0 ? y > headLimit : y < headLimit
     const withinReach = dir > 0 ? y <= far : y >= far
     if (!beyondHead || !withinReach) continue
     // 譜線そのものは連桁にしない。譜線上に乗った短い連桁は残す
-    if (staffLines.some(ly => Math.abs(ly - y) < 0.85) && b.x2 - b.x1 > 100) continue
+    if (staffLines.some(ly => Math.abs(ly - y) < 0.85) && b.x2 - b.x1 > (b.singleStroke ? 12 : 100)) continue
     ys.push(y)
   }
   ys.sort((a, b) => b - a)
@@ -585,7 +827,67 @@ function stemFor(vert: VSeg[], head: TextItem): { x: number; tip: number; base: 
   return { x: s.x, tip, base }
 }
 
-function notationBeats(
+function tupletNumber(item: TextItem): number | null {
+  const text = item.str.trim()
+  const n = /^[356]$/.test(text) ? Number(text) : cp(text) - 0xe880
+  return [3, 5, 6].includes(n) && [...text].length === 1 ? n : null
+}
+
+export function tupletGroups(items: TextItem[], beams: Beam[], system: System, x1: number, x2: number): Array<{ item: TextItem; count: number; left?: number; right?: number }> {
+  const top = system.notation.lines[0]
+  const bot = system.notation.lines[system.notation.lines.length - 1]
+  const out: ReturnType<typeof tupletGroups> = []
+  const eventXs: number[] = []
+  for (const it of items) {
+    const code = cp(it.str)
+    if ([...it.str].length !== 1 || it.y > top + 22 || it.y < bot - 16) continue
+    if (![NOTEHEAD_BLACK, NOTEHEAD_HALF, NOTEHEAD_WHOLE, NOTEHEAD_X, REST_RECT].includes(code) &&
+      !(code >= REST_WHOLE && code <= REST_32)) continue
+    if (!eventXs.some(x => Math.abs(x - it.x) < 4.5)) eventXs.push(it.x)
+  }
+  const enoughEvents = (left: number, right: number, count: number) =>
+    eventXs.filter(x => x >= left && x <= right).length >= count
+  eventXs.sort((a, b) => a - b)
+  const centeredEvents = (beam: Beam, center: number, count: number) => {
+    const xs = eventXs.filter(x => x >= beam.x1 - 6 && x <= beam.x2 + 3)
+    return xs.some((x, i) => i + count <= xs.length &&
+      Math.abs(center - (x + xs[i + count - 1]) / 2) < Math.max(5, (xs[i + count - 1] - x) * 0.23))
+  }
+  for (const item of items) {
+    const count = tupletNumber(item)
+    if (!count || item.tabDigit || item.x < x1 + 8 || item.x >= x2 - 2 || item.y > top + 40 || item.y < Math.max(bot - 40, system.tab.lines[0] + 5)) continue
+    const center = item.x + item.w / 2
+    const beam = beams.filter(b => !b.bracket &&
+      !(b.singleStroke && b.x2 - b.x1 > 12 && system.notation.lines.some(y => Math.abs(y - beamYAt(b, center)) < 0.85)) &&
+      enoughEvents(b.x1 - 6, b.x2 + 3, count) && b.x1 >= x1 - 3 && b.x2 <= x2 + 3 &&
+      centeredEvents(b, center, count) &&
+      Math.abs(item.y - beamYAt(b, center)) < 18)
+      .sort((a, b) => (b.x2 - b.x1) - (a.x2 - a.x1))[0]
+    const left = beams.filter(b => b.bracket && b.x1 >= x1 && Math.abs(b.x2 - item.x) < 9 &&
+      Math.abs(b.y2 - item.y) < 5).sort((a, b) => b.x2 - a.x2)[0]
+    const right = beams.filter(b => b.bracket && b.x2 <= x2 && Math.abs(b.x1 - (item.x + item.w)) < 9 &&
+      Math.abs(b.y1 - item.y) < 5).sort((a, b) => a.x1 - b.x1)[0]
+    if (left && right && Math.abs(left.y2 - right.y1) < 6 && enoughEvents(left.x1 - 3, right.x2, count)) {
+      out.push({ item, count, left: left.x1 - 3, right: right.x2 })
+      continue
+    }
+    // Printed bar numbers sit immediately above the staff at its left edge.
+    if (!beam) continue
+    out.push({ item, count, ...(beam ? { left: beam.x1 - 6, right: beam.x2 + 3 } : {}) })
+  }
+  return out
+}
+
+export function printedMeasureNumber(items: TextItem[], beams: Beam[], system: System, x1: number, x2: number): number | undefined {
+  const tuplets = new Set(tupletGroups(items, beams, system, x1, x2).map(g => g.item))
+  const top = system.notation.lines[0]
+  const printed = items.filter(it => /^\d{1,3}$/.test(it.str.trim()) && !tuplets.has(it) && !it.tabDigit &&
+    it.y > top - 1 && it.y < top + 28 && it.x >= x1 - 8 && it.x < x1 + (x2 - x1) * 0.45)
+    .sort((a, b) => a.x - b.x)[0]
+  return printed ? Number(printed.str) : undefined
+}
+
+export function notationBeats(
   items: TextItem[],
   beams: Beam[],
   stems: VSeg[],
@@ -598,17 +900,17 @@ function notationBeats(
   const bot = system.notation.lines[system.notation.lines.length - 1]
   const inBand = (it: TextItem) => it.y < top + 22 && it.y > bot - 16 && it.x >= x1 - 2 && it.x < x2 - 1
   const heads = items.filter(it => {
-    if (!inBand(it) || it.str.length !== 1) return false
+    if (!inBand(it) || [...it.str].length !== 1) return false
     const c = cp(it.str)
     return c === NOTEHEAD_BLACK || c === NOTEHEAD_HALF || c === NOTEHEAD_WHOLE || c === NOTEHEAD_X
   })
   const rests = items.filter(it => {
-    if (!inBand(it) || it.str.length !== 1) return false
+    if (!inBand(it) || [...it.str].length !== 1) return false
     const c = cp(it.str)
-    return c >= REST_WHOLE && c <= REST_32
+    return c === REST_RECT || (c >= REST_WHOLE && c <= REST_32)
   })
   const flags = items.filter(it => {
-    if (it.str.length !== 1) return false
+    if ([...it.str].length !== 1) return false
     const c = cp(it.str)
     return c >= FLAG_8_UP && c <= FLAG_32_DOWN && it.x >= x1 - 4 && it.x < x2 + 4 && it.y < top + 48 && it.y > bot - 36
   })
@@ -618,7 +920,7 @@ function notationBeats(
     const a = Math.max(b.x1, x1 - 4)
     const b2 = Math.min(b.x2, x2 + 4)
     const mid = (b.y1 + b.y2) / 2
-    return b2 - a >= 8 && mid < top + 52 && mid > bot - 46
+    return b2 - a >= 3 && mid < top + 52 && mid > bot - 46
   })
 
   const flagDur = (head: TextItem): number | null => {
@@ -635,9 +937,23 @@ function notationBeats(
 
   // 符頭の中心はベースラインのすぐ上。height はフォントのアセントなので使わない
   const headY = (head: TextItem) => head.y + 1.6
-  const hasDot = (head: TextItem) =>
-    dots.some(d => d.x > head.x + 1 && d.x - head.x < 12 && Math.abs(d.y - headY(head)) < 5) ||
-    dotMarks.some(d => d.x > head.x + 2 && d.x - head.x < 11 && Math.abs(d.y - headY(head)) < 3.2)
+  const dotCount = (head: TextItem, rest = false) => {
+    const spacing = Math.abs(top - bot) / (system.notation.lines.length - 1)
+    const low = rest ? (head.restBounds?.bottom ?? head.y - head.h * 0.25) : headY(head) - 3.2
+    const high = rest ? (head.restBounds?.top ?? head.y + head.h * 0.65) : headY(head) + 3.2
+    const nextX = Math.min(x2, ...[...heads, ...rests].filter(h => h.x > head.x + 4.5).map(h => h.x))
+    const candidates = [
+      ...dots.map(d => ({ x: d.x, y: d.y, text: true })),
+      ...dotMarks.map(d => ({ ...d, text: false })),
+    ].filter(d => d.x > head.x + Math.max(3, head.w * 0.7) && d.x - head.x < 16 && d.x < nextX &&
+      d.y >= low && d.y <= high && (rest || Math.abs(d.y - headY(head)) < spacing * 0.8))
+    const xs: number[] = []
+    for (const d of candidates.sort((a, b) => a.x - b.x)) {
+      if (!xs.some(x => Math.abs(x - d.x) < 2) && (xs.length ? d.x - xs[0] < 6 : d.x - head.x < (d.text ? 12 : 11))) xs.push(d.x)
+    }
+    return Math.min(2, xs.length)
+  }
+  const dotFactor = (n: number) => n === 2 ? 1.75 : n === 1 ? 1.5 : 1
 
   const groups: TextItem[][] = []
   const sortedHeads = [...heads].sort((a, b) => a.x - b.x)
@@ -669,7 +985,7 @@ function notationBeats(
         confidence = 'low'
       }
     }
-    if (hasDot(head)) dur *= 1.5
+    dur *= dotFactor(dotCount(head))
     beats.push({
       x: head.x,
       y: head.y,
@@ -691,27 +1007,58 @@ function notationBeats(
       [REST_32]: 0.125,
     }
     let dur = map[c] ?? 1
-    if (hasDot(r)) dur *= 1.5
+    if (c === REST_RECT && r.restBounds) {
+      const spacing = Math.abs(top - bot) / (system.notation.lines.length - 1)
+      const edgeDistance = (edge: number) => Math.min(...system.notation.lines.map(y => Math.abs(y - edge)))
+      const topDistance = edgeDistance(r.restBounds.top)
+      const bottomDistance = edgeDistance(r.restBounds.bottom)
+      // PDF coordinates increase upwards: whole rests hang from a line,
+      // while half rests sit on one. Allow for stroke width and rounding.
+      dur = bottomDistance <= spacing * 0.25 && bottomDistance < topDistance ? 2 : 4
+    }
+    dur *= dotFactor(dotCount(r, true))
     beats.push({ x: r.x, y: r.y, duration: dur, rest: true, dead: false, confidence: 'high' })
   }
 
   beats.sort((a, b) => a.x - b.x)
+  const assigned = new Set<RawBeat>()
+  for (const group of tupletGroups(items, localBeams, system, x1, x2)) {
+    let selected = group.left == null ? [] : beats.filter(b => b.x >= group.left! && b.x <= group.right!)
+    if (selected.length !== group.count) {
+      const center = group.item.x + group.item.w / 2
+      let best = 0
+      let distance = Infinity
+      const candidates = selected
+      if (candidates.length < group.count) continue
+      for (let i = 0; i + group.count <= candidates.length; i++) {
+        const d = Math.abs((candidates[i].x + candidates[i + group.count - 1].x) / 2 - center)
+        if (d < distance) { distance = d; best = i }
+      }
+      selected = candidates.slice(best, best + group.count)
+    }
+    for (const beat of selected) {
+      if (assigned.has(beat)) continue
+      beat.duration *= group.count === 5 ? 4 / 5 : 2 / 3
+      assigned.add(beat)
+    }
+  }
   return beats
 }
 
-function fretsInMeasure(items: TextItem[], tab: Staff, x1: number, x2: number): Array<{ x: number; string: number; fret: number; dead: boolean; w: number }> {
+/** タブの1小節からフレット数字と死に音符（x / X / ×）を読む */
+export function fretsInMeasure(items: TextItem[], tab: Staff, x1: number, x2: number): Array<{ x: number; string: number; fret: number; dead: boolean; w: number }> {
   const spacing = tab.lines[0] - tab.lines[1]
   const out: Array<{ x: number; string: number; fret: number; dead: boolean; w: number }> = []
   for (const it of items) {
     const raw = it.str.trim()
-    if (!/^(\d{1,2}|x)$/i.test(raw)) continue
+    if (!/^(\d{1,2}|x|×)$/i.test(raw)) continue
     if (it.x < x1 - 1 || it.x > x2 - 1) continue
     const centerY = it.y + it.h * 0.42
     const { index, dist } = nearestLine(centerY, tab.lines)
     if (dist > spacing * 0.48) continue
     // alphaTab: 1 = 一番下の線
     const string = tab.lines.length - index
-    const dead = /^x$/i.test(raw)
+    const dead = /^[x×]$/i.test(raw)
     out.push({ x: it.x + it.w / 2, string, fret: dead ? 0 : parseInt(raw, 10), dead, w: it.w })
   }
   return out
@@ -743,13 +1090,13 @@ interface TimedEvent {
   rest: boolean
 }
 
-/** 4分音符 = 8。4/4 は 32。付点8分は 6。 */
+/** Integer playback grid, including triplets and quintuplets. */
 function toUnits(quarters: number): number {
-  return Math.round(quarters * 8)
+  return Math.round(quarters * 960)
 }
 
 function fromUnits(units: number): number {
-  return units / 8
+  return units / 960
 }
 
 /**
@@ -947,13 +1294,39 @@ function applyTechniques(beats: GpBeat[], marks: Array<{ x: number; kind: 'h' | 
   }
 }
 
-export async function parseGuitarProPdf(data: ArrayBuffer, filename?: string): Promise<GpScore | null> {
-  if (typeof window !== 'undefined' && !pdfjsLib.GlobalWorkerOptions.workerSrc) {
-    pdfjsLib.GlobalWorkerOptions.workerSrc =
-      'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs'
+/** Repair only gaps supported by a consistent run on each side. */
+export function fillMeasureGaps(measures: GpMeasure[], ts: GpMeasure['timeSignature']): GpMeasure[] {
+  const clean = measures.map(m => ({ ...m }))
+  let previous = 0
+  for (const m of clean) {
+    if (m.number != null && m.number <= 6 && previous > 6) m.number = undefined
+    if (m.number != null) previous = m.number
   }
-  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(data) }).promise
+  const anchors = clean.flatMap((m, index) => m.number == null ? [] : [{ index, number: m.number }])
+  const insertions = new Map<number, number>()
+  for (let i = 2; i + 2 < anchors.length; i++) {
+    const left = anchors[i - 1], right = anchors[i]
+    const consistent = (a: typeof left, b: typeof left) => b.number - a.number === b.index - a.index
+    if (!consistent(anchors[i - 2], left) || !consistent(right, anchors[i + 1]) || !consistent(anchors[i + 1], anchors[i + 2])) continue
+    const missing = right.number - left.number - (right.index - left.index)
+    if (missing > 0 && missing <= 16 && right.number > 6) insertions.set(right.index, missing)
+  }
+  return clean.flatMap((m, index) => {
+    const signature = clean[index - 1]?.timeSignature ?? ts
+    const rests: GpMeasure[] = Array.from({ length: insertions.get(index) ?? 0 }, () => ({
+      beats: [{ duration: expectedQuarters(signature), notes: [] }], timeSignature: { ...signature },
+    }))
+    return [...rests, m]
+  })
+}
+
+export async function parseGuitarProPdf(data: ArrayBuffer, filename?: string): Promise<GpScore | null> {
+  configurePdfjsWorker()
+
+  const pdf = await pdfjsLib.getDocument(pdfDocumentParams(data)).promise
   const allItems: TextItem[] = []
+  let pageOneItems: TextItem[] = []
+  let pageOneNotationTop: number | null = null
   const pageSystems: Array<{
     system: System
     bars: number[]
@@ -979,15 +1352,46 @@ export async function parseGuitarProPdf(data: ArrayBuffer, filename?: string): P
         h: raw.height || 7,
       })
     }
-    allItems.push(...items)
     const op = await page.getOperatorList()
-    const geo = extractGeometry(op)
-    const beams = pairBeamEdges(geo.beamEdges)
-    const lines = clusterY(geo.horiz, pageH)
-    const staves = findStaves(lines)
+    const pageGeometry = extractGeometry(op)
+    const scale = pageStaffScale(clusterY(pageGeometry.horiz, pageH, true))
+    // Work in Qt staff units throughout, including path classification. This
+    // makes every downstream distance/size threshold relative to staff size.
+    // Leave native Qt coordinates untouched to preserve their exact behaviour.
+    const geo = scale === 1 ? pageGeometry : extractGeometry(op, scale)
+    if (scale !== 1) {
+      for (const item of items) {
+        item.x /= scale
+        item.y /= scale
+        item.w /= scale
+        item.h /= scale
+      }
+    }
+    // Native exports already expose music glyphs as text.
+    if (!items.some(it => cp(it.str) === NOTEHEAD_BLACK || cp(it.str) === NOTEHEAD_HALF)) items.push(...geo.glyphs)
+    allItems.push(...items)
+    const beams = pairBeamEdges(geo.beamEdges, geo.vert)
+    // Page-edge rules are decorations, not staff lines. Remove them before
+    // clustering so they cannot shift a nearby staff line or join its ends.
+    const pageW = (page.view[2] - page.view[0]) / scale
+    const lines = clusterY(geo.horiz.filter(h => h.x1 > 8 && h.x2 < pageW - 8), pageH / scale, true)
+    const staffLines = scale === 1 ? lines : lines.filter(l => {
+      const widest = Math.max(...lines.filter(o => Math.abs(o.y - l.y) < 28).map(o => o.x2 - o.x1))
+      return l.x2 - l.x1 >= widest * 0.95
+    })
+    const staves = findStaves(staffLines, 1)
     const sys = pairSystems(staves)
+    for (const item of items) {
+      if (!/^\d{1,2}$/.test(item.str.trim())) continue
+      item.tabDigit = sys.some(s => nearestLine(item.y + item.h * 0.42, s.tab.lines).dist <
+        (s.tab.lines[0] - s.tab.lines[1]) * 0.48)
+    }
+    if (p === 1) {
+      pageOneItems = items
+      if (sys.length > 0) pageOneNotationTop = sys[0].notation.lines[0]
+    }
     for (const system of sys) {
-      const bars = barlineXs(geo.vert, system.notation, system.tab)
+      const bars = barlineXs(geo.vert, system.notation, system.tab, true)
       pageSystems.push({
         system,
         bars,
@@ -1002,27 +1406,23 @@ export async function parseGuitarProPdf(data: ArrayBuffer, filename?: string): P
 
   if (pageSystems.length === 0) return null
 
-  const tuning = detectTuning(allItems)
+  // ヘッダーは 1 ページ目の最初の段の五線より上。段が無ければ 1 ページ目全体
+  const headerItems = pageOneNotationTop == null
+    ? pageOneItems
+    : pageOneItems.filter(it => it.y > pageOneNotationTop + 6)
+  const stringCount = pageSystems[0].system.tab.lines.length || 4
+  const tuning = parseTuningText(tuningHeaderText(headerItems), stringCount)
   const tempo = detectTempo(allItems)
   const ts = detectTimeSignature(allItems, pageSystems[0].system.notation)
   const measures: GpMeasure[] = []
 
   for (const ps of pageSystems) {
-    const top = ps.system.notation.lines[0]
     for (let i = 0; i < ps.bars.length - 1; i++) {
       const x1 = ps.bars[i]
       const x2 = ps.bars[i + 1]
       if (x2 - x1 < 8) continue
       const measure = buildMeasure(ps.items, ps.beams, ps.stems, ps.curves, ps.dots, ps.system, x1, x2, ts)
-      const printed = ps.items
-        .filter(it => {
-          if (!/^\d{1,3}$/.test(it.str.trim())) return false
-          if (it.y <= top - 1 || it.y >= top + 28) return false
-          // 小節番号は小節の左端（小節線のすぐ右、たまに少し左）に付く
-          return it.x >= x1 - 8 && it.x < x1 + (x2 - x1) * 0.45
-        })
-        .sort((a, b) => a.x - b.x)[0]
-      if (printed) measure.number = parseInt(printed.str, 10)
+      measure.number = printedMeasureNumber(ps.items, ps.beams, ps.system, x1, x2)
       measures.push(measure)
     }
   }
@@ -1032,7 +1432,7 @@ export async function parseGuitarProPdf(data: ArrayBuffer, filename?: string): P
   const title = filename?.replace(/\.pdf$/i, '').replace(/[_-]+/g, ' ').trim()
 
   return {
-    measures,
+    measures: fillMeasureGaps(measures, ts),
     tempo,
     title: title || undefined,
     tuning: tuning.tuning,

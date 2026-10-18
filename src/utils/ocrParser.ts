@@ -1,8 +1,9 @@
 import Tesseract from 'tesseract.js'
 import * as pdfjsLib from 'pdfjs-dist'
+import { configurePdfjsWorker, pdfDocumentParams } from './pdfjsConfig'
 import { TabNote, TabMeasure, ParsedTab } from './pdfParser'
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs`
+configurePdfjsWorker()
 
 /**
  * スキャンされたPDFからOCRでタブ譜を抽出
@@ -12,7 +13,7 @@ export async function parseScannedPDF(
   onProgress?: (progress: number) => void
 ): Promise<ParsedTab> {
   const arrayBuffer = await file.arrayBuffer()
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+  const pdf = await pdfjsLib.getDocument(pdfDocumentParams(arrayBuffer)).promise
   
   const allMeasures: TabMeasure[] = []
   let title: string | undefined
@@ -171,7 +172,7 @@ function parseOCRTabGroup(group: string[]): TabMeasure {
         // フレットが妥当な範囲か確認（0-24）
         if (fret >= 0 && fret <= 24) {
           notes.push({
-            string: stringNum + 1,
+            string: Math.min(4, normalizedLines.length) - stringNum, // Top line is highest; internal 1 is lowest.
             fret,
             position,
             duration: 1,
@@ -194,11 +195,12 @@ function parseOCRTabGroup(group: string[]): TabMeasure {
  */
 function createDefaultMeasure(): TabMeasure {
   return {
+    // Demo riff starts on open low E (internal string 1), then moves to A.
     notes: [
-      { string: 4, fret: 0, position: 0, duration: 1 },
-      { string: 4, fret: 0, position: 1, duration: 1 },
-      { string: 4, fret: 3, position: 2, duration: 1 },
-      { string: 3, fret: 0, position: 3, duration: 1 },
+      { string: 1, fret: 0, position: 0, duration: 1 },
+      { string: 1, fret: 0, position: 1, duration: 1 },
+      { string: 1, fret: 3, position: 2, duration: 1 },
+      { string: 2, fret: 0, position: 3, duration: 1 },
     ],
   }
 }
@@ -208,7 +210,7 @@ function createDefaultMeasure(): TabMeasure {
  */
 export async function isPDFScanned(file: File): Promise<boolean> {
   const arrayBuffer = await file.arrayBuffer()
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+  const pdf = await pdfjsLib.getDocument(pdfDocumentParams(arrayBuffer)).promise
   
   // 最初のページをチェック
   const page = await pdf.getPage(1)

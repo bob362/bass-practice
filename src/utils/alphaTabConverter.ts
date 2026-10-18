@@ -1,3 +1,4 @@
+import { midiToName } from '../audio/pitch'
 import { ParsedTab, TabMeasure, TabNote } from './pdfParser'
 
 /**
@@ -16,7 +17,25 @@ export function convertToAlphaTab(parsed: ParsedTab): string {
     lines.push(`\\subtitle "${parsed.tuningLabel}"`)
   }
   lines.push(`\\tempo ${parsed.tempo || 120}`)
-  lines.push(formatTuning(parsed.tuning))
+  let tuning = tuningTokens(parsed.tuning || '')
+  if (!tuning.length) tuning = tuningTokens('E1 A1 D2 G2')
+  const maxString = Math.max(0, ...parsed.measures.flatMap(m =>
+    m.gp ? m.gp.beats.flatMap(b => b.notes.map(n => n.string)) : m.notes.map(n => n.string)))
+  const stringCount = Math.max(tuning.length, maxString)
+  if (maxString > tuning.length) {
+    const pitches = tuning.map(token => {
+      const match = token.match(/^([A-G])([#b]?)(-?\d+)$/)
+      if (!match) return NaN
+      return (Number(match[3]) + 1) * 12 + ({ C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 }[match[1]] ?? 0) + (match[2] === '#' ? 1 : match[2] === 'b' ? -1 : 0)
+    })
+    if (pitches.some(p => !Number.isFinite(p))) tuning = tuningTokens(defaultBassTuning(stringCount))
+    else {
+      let lowest = pitches[0]
+      while (tuning.length < stringCount) tuning.unshift(midiToName(lowest -= 5))
+    }
+  }
+  // ParsedTab is low-first (string 1 = lowest); alphaTex is high-first.
+  lines.push(formatInternalTuning(tuning))
   
   // 空行
   lines.push('.')
@@ -25,7 +44,7 @@ export function convertToAlphaTab(parsed: ParsedTab): string {
   let lastDur = ''
 
   for (const measure of parsed.measures) {
-    const measureStr = measure.gp ? convertGpMeasure(measure.gp, () => lastDur, d => { lastDur = d }) : convertMeasure(measure)
+    const measureStr = measure.gp ? convertGpMeasure(measure.gp, stringCount, () => lastDur, d => { lastDur = d }) : convertMeasure(measure, stringCount)
     if (measureStr) measureStrings.push(measureStr)
   }
 
@@ -49,7 +68,7 @@ export function convertToAlphaTab(parsed: ParsedTab): string {
 /**
  * 1小節を.tex形式に変換
  */
-function convertMeasure(measure: TabMeasure): string {
+function convertMeasure(measure: TabMeasure, stringCount: number): string {
   if (measure.notes.length === 0) {
     return 'r' // 休符
   }
@@ -76,10 +95,10 @@ function convertMeasure(measure: TabMeasure): string {
     if (notesAtPos.length === 1) {
       // 単音
       const note = notesAtPos[0]
-      noteParts.push(formatNote(note))
+      noteParts.push(formatNote(note, stringCount))
     } else {
       // 和音（複数の弦を同時に弾く）
-      const chord = `(${notesAtPos.map(n => formatNote(n)).join(' ')})`
+      const chord = `(${notesAtPos.map(n => formatNote(n, stringCount)).join(' ')})`
       noteParts.push(chord)
     }
   }
@@ -92,8 +111,9 @@ function convertMeasure(measure: TabMeasure): string {
  * 形式: フレット番号.弦番号
  * 例: 0.4 (4弦の0フレット), 5.3 (3弦の5フレット)
  */
-function formatNote(note: TabNote): string {
-  const base = note.dead ? `x.${note.string}` : `${note.fret}.${note.string}`
+function formatNote(note: TabNote, stringCount: number): string {
+  const string = stringCount - note.string + 1
+  const base = note.dead ? `x.${string}` : `${note.fret}.${string}`
   const fx: string[] = []
   if (note.hammer) fx.push('h')
   if (note.slide) fx.push('sl')
@@ -135,13 +155,34 @@ function withDots(content: string, dots: 0 | 1 | 2): string {
   return content
 }
 
-function formatTuning(tuning?: string): string {
-  const raw = (tuning || 'E1 A1 D2 G2').trim().replace(/^\(+|\)+$/g, '')
-  return `\\tuning (${raw})`
+function tuningTokens(tuning: string): string[] {
+  return tuning.trim().replace(/^\(+|\)+$/g, '').split(/\s+/).filter(Boolean)
+}
+
+function defaultBassTuning(count: number): string {
+  const defaults: Record<number, string> = {
+    4: 'E1 A1 D2 G2', 5: 'B0 E1 A1 D2 G2', 6: 'B0 E1 A1 D2 G2 C3',
+  }
+  if (defaults[count]) return defaults[count]
+  const tuning = ['E1', 'A1', 'D2', 'G2']
+  let lowest = 28
+  while (tuning.length < count) tuning.unshift(midiToName(lowest -= 5))
+  return tuning.join(' ')
+}
+
+function formatInternalTuning(tokens: string[]): string {
+  return formatAlphaTexTuning([...tokens].reverse().join(' '))
+}
+
+// Review metadata already follows alphaTex's high-to-low order.
+function formatAlphaTexTuning(tuning?: string): string {
+  const tokens = tuningTokens(tuning || '')
+  return `\\tuning (${tokens.length ? tokens.join(' ') : 'G2 D2 A1 E1'})`
 }
 
 function convertGpMeasure(
   measure: import('./gpPdfParser').GpMeasure,
+  stringCount: number,
   getLast: () => string,
   setLast: (d: string) => void,
 ): string {
@@ -156,8 +197,8 @@ function convertGpMeasure(
     const content = beat.notes.length === 0
       ? 'r'
       : beat.notes.length === 1
-        ? formatNote(beat.notes[0] as TabNote)
-        : `(${beat.notes.map(n => formatNote(n as TabNote)).join(' ')})`
+        ? formatNote(beat.notes[0] as TabNote, stringCount)
+        : `(${beat.notes.map(n => formatNote(n as TabNote, stringCount)).join(' ')})`
     parts.push(withDots(content, spec.dots))
   }
   return parts.join(' ')
@@ -208,11 +249,10 @@ export function editableToTex(editable: EditableScore): string {
     lines.push(`\\tempo ${editable.metadata.tempo}`)
   }
   
-  lines.push(formatTuning(editable.metadata.tuning))
+  lines.push(formatAlphaTexTuning(editable.metadata.tuning))
   lines.push('.')
 
-  const hasDuration = editable.measures.some(m => m.includes(':'))
-  let currentLine = hasDuration ? '' : ':4 '
+  let currentLine = ''
   for (let i = 0; i < editable.measures.length; i++) {
     currentLine += editable.measures[i]
     

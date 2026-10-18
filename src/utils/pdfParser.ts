@@ -1,8 +1,9 @@
 import * as pdfjsLib from 'pdfjs-dist'
 import { parseGuitarProPdf, type GpMeasure } from './gpPdfParser'
+import { configurePdfjsWorker, pdfDocumentParams } from './pdfjsConfig'
 
 if (typeof window !== 'undefined') {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs`
+  configurePdfjsWorker()
 }
 
 export interface TabNote {
@@ -29,7 +30,7 @@ export interface ParsedTab {
   tempo?: number
   title?: string
   artist?: string
-  /** alphaTex の \\tuning に渡す音名。低い弦から */
+  /** 内部では低い弦からの音名。alphaTex 出力時に高い弦からへ反転 */
   tuning?: string
   tuningLabel?: string
 }
@@ -68,7 +69,7 @@ export async function parseTextPDF(file: File): Promise<ParsedTab> {
     console.warn('Guitar Pro PDF parse failed, falling back', err)
   }
 
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+  const pdf = await pdfjsLib.getDocument(pdfDocumentParams(arrayBuffer)).promise
   
   let allText = ''
   const lines: Array<{ text: string; y: number; x: number }> = []
@@ -183,7 +184,7 @@ function parseTabLines(sections: string[][]): TabMeasure[] {
           }
           
           measureNotes.push({
-            // 上の行が一番高い弦。alphaTab は 1 が一番低い弦
+            // 上の行が一番高い弦。内部では 1 が一番低い弦
             string: 4 - stringNum,
             fret,
             position,

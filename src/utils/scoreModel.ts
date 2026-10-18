@@ -12,7 +12,9 @@ export interface PlainScore {
 export function extractPlainScore(score: any): PlainScore {
   const tempo = score?.tempo > 0 ? Number(score.tempo) : 120
   const staff = score?.tracks?.[0]?.staves?.[0]
-  const tuning: number[] = [...(staff?.tunings ?? staff?.stringTuning?.tunings ?? [])]
+  const staffTuning: number[] = [...(staff?.tunings ?? staff?.stringTuning?.tunings ?? [])]
+  const orderedStrings = staffTuning.map((pitch, index) => ({ pitch, index })).sort((a, b) => b.pitch - a.pitch || a.index - b.index)
+  const tuning = orderedStrings.map(s => s.pitch)
   const seconds = 60 / (tempo * 960)
   let cursor = 0
   const bars: PlainScore['bars'] = (score?.masterBars ?? []).map((mb: any, i: number) => {
@@ -29,9 +31,9 @@ export function extractPlainScore(score: any): PlainScore {
       const startTick = beat.absolutePlaybackStart ?? ((beat.playbackStart ?? 0) + bar.startTick)
       const durationTicks = beat.playbackDuration ?? 960
       ;(beat.notes ?? []).forEach((note: any, k: number) => {
-        // alphaTab's model numbers strings from the lowest (1 = lowest), while alphaTex and
-        // our PlainScore use 1 = highest string (matching tuning[0] = highest).
-        const string = tuning.length ? tuning.length - note.string + 1 : note.string
+        // Model strings index the original tuning from the end; PlainScore is high-first.
+        const originalIndex = staffTuning.length - note.string
+        const string = tuning.length ? orderedStrings.findIndex(s => s.index === originalIndex) + 1 : note.string
         notes.push({
         id: `${bar.index}:${j}:${k}`, bar: bar.index, startTick, durationTicks, startSec: startTick * seconds, durationSec: durationTicks * seconds,
         string, fret: note.fret, midi: note.realValue ?? tuning[string - 1] + note.fret,

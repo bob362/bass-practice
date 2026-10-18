@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
+import { configurePdfjsWorker, pdfDocumentParams } from '../../utils/pdfjsConfig'
 import { parseTextPDF } from '../../utils/pdfParser'
 import { parseScannedPDF, isPDFScanned } from '../../utils/ocrParser'
 import { convertToAlphaTab, texToEditable, editableToTex, EditableScore } from '../../utils/alphaTabConverter'
@@ -9,7 +10,7 @@ import {
 } from '../../utils/guitarPro'
 import './PDFImport.css'
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs`
+configurePdfjsWorker()
 
 interface PDFImportProps {
   onSongSelected: (song: ConvertedSong) => void
@@ -124,7 +125,7 @@ export default function PDFImport({ onSongSelected }: PDFImportProps) {
     ;(async () => {
       try {
         const data = new Uint8Array(await file.arrayBuffer())
-        const pdf = await pdfjsLib.getDocument({ data }).promise
+        const pdf = await pdfjsLib.getDocument(pdfDocumentParams(data)).promise
         if (cancelled || !previewRef.current) return
         host.replaceChildren()
         for (let i = 1; i <= pdf.numPages; i++) {
@@ -380,10 +381,10 @@ export default function PDFImport({ onSongSelected }: PDFImportProps) {
                   />
                 </div>
                 <div className="form-group">
-                  <label>チューニング（低い弦から）</label>
+                  <label>チューニング（高い弦から）</label>
                   <input
                     type="text"
-                    value={editableScore.metadata.tuning || 'E1 A1 D2 G2'}
+                    value={editableScore.metadata.tuning || 'G2 D2 A1 E1'}
                     onChange={(e) => handleMetadataChange('tuning', e.target.value)}
                   />
                 </div>
@@ -398,7 +399,7 @@ export default function PDFImport({ onSongSelected }: PDFImportProps) {
                   />
                 </div>
               </div>
-              <h4 style={{ marginBottom: '0.75rem' }}>小節（1が一番低い弦。:8 は8分音符、{'{d}'} は付点、{'{h}'} ハンマリング、{'{sl}'} スライド、x はデッドノート）</h4>
+              <h4 style={{ marginBottom: '0.75rem' }}>小節（1が一番高い弦。:8 は8分音符、{'{d}'} は付点、{'{h}'} ハンマリング、{'{sl}'} スライド、x はデッドノート）</h4>
               <div className="measures-editor">
                 {editableScore.measures.map((measure, index) => (
                   <div key={index} className="measure-item">

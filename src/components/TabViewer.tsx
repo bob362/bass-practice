@@ -15,6 +15,7 @@ import SimplifyPanel from './SimplifyPanel'
 import type { SimplifyResult } from './SimplifyPanel'
 import { extractPlainScore } from '../utils/scoreModel'
 import type { PlainScore } from '../utils/scoreModel'
+import { getPlayPauseKeyAction, rewindToStart } from '../utils/playbackKeys'
 
 // alphaTabのグローバルインポート
 declare global {
@@ -88,6 +89,8 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [isReady, setIsReady] = useState(false)
+  const isReadyRef = useRef(isReady)
+  isReadyRef.current = isReady
   const [tempo, setTempo] = useState(100)
   const [loopStart, setLoopStart] = useState<number | null>(null)
   const [loopEnd, setLoopEnd] = useState<number | null>(null)
@@ -404,6 +407,30 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
       apiRef.current.play()
     }
   }
+  const handlePlayPauseRef = useRef(handlePlayPause)
+  handlePlayPauseRef.current = handlePlayPause
+
+  // スペースキーで再生／一時停止（再生ボタンと同じ処理を呼ぶ）
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const action = getPlayPauseKeyAction(e)
+      if (action === 'ignore') return
+      if (!apiRef.current || !isReadyRef.current) return
+      e.preventDefault()
+      if (action === 'toggle') handlePlayPauseRef.current()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
+  /** 先頭に戻す。再生状態は維持する（再生中なら先頭から再生を続ける） */
+  const handleRewind = () => {
+    const api = apiRef.current
+    if (!rewindToStart(api, scrollRef.current)) return
+    startPass(0)
+    // 一時停止中はalphaTabがシークイベントを出さない場合があるので動画側へ明示的に通知する
+    positionListeners.current.forEach(listener => listener(0, true))
+  }
 
   const handleStop = () => {
     if (!apiRef.current) return
@@ -535,6 +562,13 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
       <div className="controls-panel">
         <div className="control-group">
           <h3>再生</h3>
+          <button
+            className="button button-secondary button-small"
+            onClick={handleRewind}
+            disabled={!isReady}
+          >
+            ⏮ 最初に戻る
+          </button>
           <button 
             className="button button-primary" 
             onClick={handlePlayPause}
@@ -695,7 +729,8 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
           <div className="info-text">
             • タブ上をクリックすると、その位置から再生開始<br/>
             • テンポスライダーで速度調整<br/>
-            • A-B地点を設定して難しいフレーズを反復練習
+            • A-B地点を設定して難しいフレーズを反復練習<br/>
+            • スペースキーで再生／一時停止
           </div>
         </div>
       </div>

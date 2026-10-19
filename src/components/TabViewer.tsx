@@ -149,6 +149,22 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
     return (api.timePosition ?? 0) * (api.playbackSpeed ?? 1) / 1000
   }, [])
 
+  /** 動画側の操作から譜面を再生・一時停止・シーク・テンポ変更する（YouTube同期用） */
+  const playTab = useCallback(() => {
+    apiRef.current?.play()
+  }, [])
+
+  const pauseTab = useCallback(() => {
+    apiRef.current?.pause()
+  }, [])
+
+  /** tabSecは100%テンポ基準の秒（getTabSecの逆変換）。alphaTabのtimePositionは再生速度で伸縮した値 */
+  const seekTab = useCallback((tabSec: number) => {
+    const api = apiRef.current
+    if (!api || !Number.isFinite(tabSec)) return
+    api.timePosition = Math.max(0, tabSec) * 1000 / (api.playbackSpeed || 1)
+  }, [])
+
   const startPass = (startTick: number) => {
     passRef.current = { startTick, minTempo: tempoRef.current }
   }
@@ -498,6 +514,9 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
           tempoPercent={tempo}
           getTabSec={getTabSec}
           subscribePosition={subscribePosition}
+          playTab={playTab}
+          pauseTab={pauseTab}
+          seekTab={seekTab}
         />
       </div>
       <div className="controls-panel">

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { loadYouTubeAPI, parseYouTubeUrl } from '../utils/youtube'
-import { tabToVideoTime } from '../utils/sync'
+import { tabToVideoTime, videoToTabTime } from '../utils/sync'
 import { getSongMediaSettings, saveSongMediaSettings } from '../utils/storage'
 import type { SongMediaSettings } from '../utils/storage'
 import { applyVolume, readPlayerVolume } from '../utils/youtubeVolume'
@@ -23,6 +23,14 @@ const SEEK_SETTLE_MS = 1200
 const VOLUME_POLL_MS = 1000
 /** アプリが音量を設定した直後はgetVolumeが古い値を返すことがあるので取り込みを休む（ミリ秒） */
 const VOLUME_SETTLE_MS = 1500
+/** アプリが動画を操作した直後に届くYouTubeのイベントは自分の操作の結果とみなして無視する（ミリ秒） */
+const COMMAND_SETTLE_MS = 1000
+/** 動画側のシーク（YouTubeのシークバー操作など）を検出する間隔（ミリ秒） */
+const SEEK_POLL_MS = 250
+/** 予測位置からこれ以上飛んだらユーザーが動画をシークしたとみなす（秒） */
+const SEEK_DETECT_SEC = 1.0
+
+type CommandKind = 'play' | 'pause' | 'seek' | 'rate'
 
 export type PositionListener = (tabSec: number, isSeek: boolean) => void
 
@@ -35,9 +43,15 @@ interface YouTubePanelProps {
   /** 現在の譜面位置（100%テンポ基準の秒） */
   getTabSec: () => number
   subscribePosition: (listener: PositionListener) => () => void
+  /** 譜面を再生する（動画側の操作に譜面を追従させる） */
+  playTab?: () => void
+  /** 譜面を一時停止する */
+  pauseTab?: () => void
+  /** 譜面を指定位置（100%テンポ基準の秒）にシークする */
+  seekTab?: (tabSec: number) => void
 }
 
-export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTabSec, subscribePosition }: YouTubePanelProps) {
+export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTabSec, subscribePosition, playTab, pauseTab, seekTab }: YouTubePanelProps) {
   const [slot, setSlot] = useState<Slot>('playthrough')
   const [settings, setSettings] = useState<SongMediaSettings>(() => getSongMediaSettings(songId ?? ''))
   const [urlDraft, setUrlDraft] = useState('')
@@ -53,6 +67,11 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
   const readyRef = useRef(false)
   const lastSeekAt = useRef(0)
   const lastDriftCheck = useRef(0)
+  /** アプリが最後に動画へ出した命令（種類ごとの時刻と、最後の命令） */
+  const commandAt = useRef<Record<CommandKind, number>>({ play: -Infinity, pause: -Infinity, seek: -Infinity, rate: -Infinity })
+  const lastCommand = useRef<{ kind: CommandKind; at: number } | null>(null)
+  /** 動画シーク検出用の基準サンプル */
+  const seekBaseline = useRef<{ videoSec: number; at: number; playing: boolean } | null>(null)
 
   const url = settings[urlKey(slot)] ?? ''
   const offsetSec = settings[offsetKey(slot)]
@@ -64,6 +83,9 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
   // 最新値をイベントハンドラから参照するためのref
   const syncRef = useRef({ syncEnabled, offsetSec, tempoPercent, playbackRate: settings.playbackRate, isTabPlaying })
   syncRef.current = { syncEnabled, offsetSec, tempoPercent, playbackRate: settings.playbackRate, isTabPlaying }
+  // 譜面操作用のコールバック（プレイヤーのイベントハンドラは1度しか作られないのでrefで最新を参照）
+  const tabRef = useRef({ playTab, pauseTab, seekTab, getTabSec })
+  tabRef.current = { playTab, pauseTab, seekTab, getTabSec }
   // 最新の音量設定（ポーリングやonReadyから参照。変更時は即座に更新して書き込みループを防ぐ）
   const volumeRef = useRef({ volume, muted })
   volumeRef.current = { volume, muted }
@@ -92,6 +114,101 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
       console.error('Failed to save media settings:', error)
     }
   }, [songId])
+  // プレイヤーのイベントハンドラから最新のupdateを呼ぶためのref
+  const updateRef = useRef(update)
+  updateRef.current = update
+
+  /** アプリからの命令を記録する（直後のYouTubeイベントを自分の操作として無視するため） */
+  const markCommand = useCallback((kind: CommandKind) => {
+    const at = performance.now()
+    commandAt.current[kind] = at
+    lastCommand.current = { kind, at }
+  }, [])
+
+  const withinCommand = useCallback((kind?: CommandKind) => {
+    const at = kind ? commandAt.current[kind] : (lastCommand.current?.at ?? -Infinity)
+    return performance.now() - at < COMMAND_SETTLE_MS
+  }, [])
+
+  const commandPlay = useCallback((player: YT.Player) => {
+    markCommand('play')
+    player.playVideo()
+  }, [markCommand])
+
+  const commandPause = useCallback((player: YT.Player) => {
+    markCommand('pause')
+    player.pauseVideo()
+  }, [markCommand])
+
+  const commandRate = useCallback((player: YT.Player, rate: number) => {
+    markCommand('rate')
+    player.setPlaybackRate(rate)
+  }, [markCommand])
+
+  /** 動画位置（秒）を譜面位置（100%テンポ基準の秒、0以上）に変換する */
+  const videoToTabSec = useCallback((videoSec: number) => {
+    const { offsetSec, tempoPercent, playbackRate } = syncRef.current
+    try {
+      return Math.max(0, videoToTabTime(videoSec, { offsetSec, tempoPercent, playbackRate }))
+    } catch {
+      return null
+    }
+  }, [])
+
+  /** 譜面位置を今の動画位置に合わせる（ずれが小さければ何もしない） */
+  const syncTabToVideo = useCallback((player: YT.Player) => {
+    const { seekTab, getTabSec } = tabRef.current
+    if (!seekTab) return
+    let videoSec: number
+    try { videoSec = player.getCurrentTime() } catch { return }
+    const tabSec = videoToTabSec(videoSec)
+    if (tabSec === null) return
+    const currentTab = getTabSec()
+    // 譜面位置から見た動画の位置（動画の範囲内に収める）。プリロールや動画終了後で
+    // 動画が端に止まっているだけなら、譜面は動かさない
+    const { offsetSec, tempoPercent, playbackRate } = syncRef.current
+    let expected: number | null = null
+    try { expected = tabToVideoTime(currentTab, { offsetSec, tempoPercent, playbackRate }) } catch { /* 無効な設定 */ }
+    if (expected !== null) {
+      let duration = 0
+      try { duration = player.getDuration() } catch { /* 未取得 */ }
+      const clamped = Math.max(0, duration > 0 ? Math.min(expected, duration) : expected)
+      if (Math.abs(clamped - videoSec) <= DRIFT_TOLERANCE_SEC) return
+    }
+    if (Math.abs(tabSec - currentTab) > DRIFT_TOLERANCE_SEC) seekTab(tabSec)
+  }, [videoToTabSec])
+
+  /**
+   * ユーザーが動画をシークしたかを調べ、そうなら譜面をその位置へシークする。
+   * 処理した場合はtrueを返す。基準サンプルは毎回更新する
+   */
+  const checkVideoSeek = useCallback((): boolean => {
+    const player = playerRef.current
+    if (!player || !readyRef.current || !syncRef.current.syncEnabled) return false
+    let actual: number
+    let playing: boolean
+    try {
+      actual = player.getCurrentTime()
+      playing = player.getPlayerState() === YT.PlayerState.PLAYING
+    } catch {
+      return false
+    }
+    const now = performance.now()
+    const baseline = seekBaseline.current
+    seekBaseline.current = { videoSec: actual, at: now, playing }
+    if (!baseline || !Number.isFinite(actual)) return false
+    const elapsedSec = (now - baseline.at) / 1000
+    const predicted = baseline.videoSec + (baseline.playing ? elapsedSec * syncRef.current.playbackRate : 0)
+    if (Math.abs(actual - predicted) <= SEEK_DETECT_SEC) return false
+    if (now - lastSeekAt.current < SEEK_SETTLE_MS || withinCommand()) return false
+    const { seekTab } = tabRef.current
+    if (!seekTab) return false
+    const tabSec = videoToTabSec(actual)
+    if (tabSec === null) return false
+    // 譜面のシークイベントで動画が合わせ直される
+    seekTab(tabSec)
+    return true
+  }, [videoToTabSec, withinCommand])
 
   // プレイヤーの生成・破棄（動画IDが変わったら作り直す）
   useEffect(() => {
@@ -116,12 +233,38 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
             if (cancelled) return
             readyRef.current = true
             setIsPlayerReady(true)
-            event.target.setPlaybackRate(syncRef.current.playbackRate)
+            commandRate(event.target, syncRef.current.playbackRate)
             applyVolume(event.target, volumeRef.current.volume, volumeRef.current.muted)
             lastVolumeAppliedAt.current = performance.now()
           },
           onStateChange: event => {
-            if (!cancelled) setIsVideoPlaying(event.data === YTApi.PlayerState.PLAYING)
+            if (cancelled) return
+            setIsVideoPlaying(event.data === YTApi.PlayerState.PLAYING)
+            const { syncEnabled, isTabPlaying } = syncRef.current
+            const player = playerRef.current
+            if (!syncEnabled || !readyRef.current || !player) return
+            const { playTab, pauseTab } = tabRef.current
+            if (event.data === YTApi.PlayerState.PLAYING) {
+              // ユーザーが動画を再生した：譜面を動画の位置に合わせて再生
+              if (isTabPlaying || withinCommand('play') || !playTab) return
+              syncTabToVideo(player)
+              playTab()
+            } else if (event.data === YTApi.PlayerState.PAUSED) {
+              // ユーザーが動画を一時停止した。プリロールや動画終了でアプリが止めた場合は譜面を止めない
+              if (!isTabPlaying || withinCommand('pause') || !pauseTab) return
+              pauseTab()
+            }
+            // BUFFERING / ENDED / CUED / UNSTARTED は無視
+          },
+          onPlaybackRateChange: event => {
+            if (cancelled) return
+            seekBaseline.current = null
+            if (!syncRef.current.syncEnabled || !readyRef.current) return
+            const rate = Number(event.data)
+            if (!Number.isFinite(rate) || Math.abs(rate - syncRef.current.playbackRate) <= 0.001) return
+            if (withinCommand('rate')) return
+            // YouTube側で速度が変わった：設定に取り込み、既存の処理で位置を合わせ直す
+            updateRef.current({ playbackRate: rate })
           },
         },
       })
@@ -141,8 +284,19 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
   }, [videoId, slot])
 
   useEffect(() => {
-    if (isPlayerReady) playerRef.current?.setPlaybackRate(settings.playbackRate)
-  }, [settings.playbackRate, isPlayerReady])
+    if (isPlayerReady && playerRef.current) commandRate(playerRef.current, settings.playbackRate)
+  }, [settings.playbackRate, isPlayerReady, commandRate])
+
+  // 動画側のシーク（YouTubeのシークバー操作など）を検出して譜面を追従させる
+  useEffect(() => {
+    seekBaseline.current = null
+    if (!syncEnabled || !isPlayerReady) return
+    const id = window.setInterval(() => { checkVideoSeek() }, SEEK_POLL_MS)
+    return () => {
+      window.clearInterval(id)
+      seekBaseline.current = null
+    }
+  }, [syncEnabled, isPlayerReady, checkVideoSeek])
 
   // 音量・ミュートをプレイヤーに反映
   useEffect(() => {
@@ -192,9 +346,11 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
   const seekVideo = useCallback((sec: number) => {
     const player = playerRef.current
     if (!player || !readyRef.current) return
+    markCommand('seek')
     player.seekTo(Math.max(0, sec), true)
     lastSeekAt.current = performance.now()
-  }, [])
+    seekBaseline.current = null
+  }, [markCommand])
 
   /** 譜面位置に動画を合わせる。force=trueならしきい値に関係なくシークする */
   const alignVideo = useCallback((tabSec: number, force: boolean) => {
@@ -207,30 +363,32 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
 
     if (expected < 0) {
       // 動画の開始前（プリロール）：0秒で待機し、到達したら再生を始める
-      if (state === YT.PlayerState.PLAYING) player.pauseVideo()
+      if (state === YT.PlayerState.PLAYING) commandPause(player)
       if (force) seekVideo(0)
       return
     }
     const duration = player.getDuration()
     if (duration > 0 && expected >= duration) {
-      if (state === YT.PlayerState.PLAYING) player.pauseVideo()
+      if (state === YT.PlayerState.PLAYING) commandPause(player)
       return
     }
+    // ユーザーが動画をシークした直後なら、動画を引き戻さず譜面側を合わせる
+    if (!force && checkVideoSeek()) return
     const drift = Math.abs(player.getCurrentTime() - expected)
     const settling = performance.now() - lastSeekAt.current < SEEK_SETTLE_MS
     if (force || (!settling && drift > DRIFT_TOLERANCE_SEC)) seekVideo(expected)
-    if (playing && state !== YT.PlayerState.PLAYING && state !== YT.PlayerState.BUFFERING) player.playVideo()
-    if (!playing && state === YT.PlayerState.PLAYING) player.pauseVideo()
-  }, [expectedVideoSec, seekVideo])
+    if (playing && state !== YT.PlayerState.PLAYING && state !== YT.PlayerState.BUFFERING) commandPlay(player)
+    if (!playing && state === YT.PlayerState.PLAYING) commandPause(player)
+  }, [expectedVideoSec, seekVideo, checkVideoSeek, commandPlay, commandPause])
 
   // 譜面の再生・一時停止に追従
   useEffect(() => {
     if (!syncEnabled || !isPlayerReady) return
     const player = playerRef.current
     if (!player) return
-    if (!isTabPlaying) player.pauseVideo()
+    if (!isTabPlaying) commandPause(player)
     alignVideo(getTabSec(), true)
-  }, [isTabPlaying, syncEnabled, isPlayerReady, alignVideo, getTabSec])
+  }, [isTabPlaying, syncEnabled, isPlayerReady, alignVideo, getTabSec, commandPause])
 
   // テンポ・速度・オフセットが変わったら位置を合わせ直す
   useEffect(() => {
@@ -267,8 +425,18 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
   const handleVideoPlayPause = () => {
     const player = playerRef.current
     if (!player || !readyRef.current) return
-    if (isVideoPlaying) player.pauseVideo()
-    else player.playVideo()
+    if (syncEnabled && playTab && pauseTab) {
+      // 同期中は譜面を操作し、動画は既存の追従処理に任せる
+      if (isTabPlaying) {
+        pauseTab()
+      } else {
+        syncTabToVideo(player)
+        playTab()
+      }
+      return
+    }
+    if (isVideoPlaying) commandPause(player)
+    else commandPlay(player)
   }
 
   const handleSetOffsetHere = () => {

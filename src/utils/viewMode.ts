@@ -36,30 +36,33 @@ export function saveViewMode(mode: ViewMode): void {
 export interface AlphaTabViewOptions {
   staveProfile: number
   rhythmMode: number
-  showTabRests: boolean
+  rhythmHeight: number
 }
+
+export const TAB_RHYTHM_HEIGHT = 30
+export const ALPHATAB_DEFAULT_RHYTHM_HEIGHT = 25
 
 /** alphaTab の実行時列挙値に表示モードを変換する。 */
 export function viewModeOptions(mode: ViewMode): AlphaTabViewOptions {
   switch (mode) {
     case 'tab-rhythm':
-      return { staveProfile: 3, rhythmMode: 2, showTabRests: true }
+      // 2 (ShowWithBars) は連桁を描画し、1 (ShowWithBeams) は拍ごとの符尾のみを描画する。
+      return { staveProfile: 3, rhythmMode: 2, rhythmHeight: TAB_RHYTHM_HEIGHT }
     case 'score-tab':
-      return { staveProfile: 1, rhythmMode: 0, showTabRests: false }
+      return { staveProfile: 1, rhythmMode: 0, rhythmHeight: ALPHATAB_DEFAULT_RHYTHM_HEIGHT }
     case 'tab-only':
-      return { staveProfile: 3, rhythmMode: 0, showTabRests: false }
+      return { staveProfile: 3, rhythmMode: 0, rhythmHeight: ALPHATAB_DEFAULT_RHYTHM_HEIGHT }
   }
 }
 
 /** 表示設定のみを変更し、再描画は呼び出し元に任せる。 */
 export function applyViewModeToSettings(settings: any, mode: ViewMode): void {
   const options = viewModeOptions(mode)
+  settings.display ??= {}
+  settings.notation ??= {}
   settings.display.staveProfile = options.staveProfile
   settings.notation.rhythmMode = options.rhythmMode
-  if (!(settings.notation.elements instanceof Map)) {
-    settings.notation.elements = new Map<number, boolean>()
-  }
-  settings.notation.elements.set(12, options.showTabRests)
+  settings.notation.rhythmHeight = options.rhythmHeight
 }
 
 /**

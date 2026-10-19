@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  ALPHATAB_DEFAULT_RHYTHM_HEIGHT, TAB_RHYTHM_HEIGHT,
   DEFAULT_VIEW_MODE, VIEW_MODES, VIEW_MODE_LABELS, VIEW_MODE_STORAGE_KEY,
   applyViewModeToSettings, isViewMode, loadViewMode, prepareBassScoreForNotation,
   saveViewMode, viewModeOptions,
@@ -44,28 +45,52 @@ describe('表示モードの保存', () => {
 
 describe('alphaTab の表示設定', () => {
   const cases = [
-    ['tab-rhythm', { staveProfile: 3, rhythmMode: 2, showTabRests: true }],
-    ['score-tab', { staveProfile: 1, rhythmMode: 0, showTabRests: false }],
-    ['tab-only', { staveProfile: 3, rhythmMode: 0, showTabRests: false }],
+    ['tab-rhythm', { staveProfile: 3, rhythmMode: 2, rhythmHeight: 30 }],
+    ['score-tab', { staveProfile: 1, rhythmMode: 0, rhythmHeight: 25 }],
+    ['tab-only', { staveProfile: 3, rhythmMode: 0, rhythmHeight: 25 }],
   ] as const
 
   it.each(cases)('%s を数値設定に変換する', (mode, options) => {
     expect(viewModeOptions(mode)).toEqual(options)
-    const elements = new Map([[99, true], [12, !options.showTabRests]])
-    const settings = { display: { staveProfile: 0 }, notation: { rhythmMode: 3, elements } }
+    const elements = new Map([[99, true], [12, false]])
+    const settings = { display: { staveProfile: 0 }, notation: { rhythmMode: 3, rhythmHeight: 0, elements } }
     applyViewModeToSettings(settings, mode)
     expect(settings.display.staveProfile).toBe(options.staveProfile)
     expect(settings.notation.rhythmMode).toBe(options.rhythmMode)
+    expect(settings.notation.rhythmHeight).toBe(options.rhythmHeight)
     expect(settings.notation.elements).toBe(elements)
-    expect(elements.get(12)).toBe(options.showTabRests)
-    expect(elements.get(99)).toBe(true)
+    expect([...elements]).toEqual([[99, true], [12, false]])
   })
 
-  it.each([undefined, null, {}, []])('Map がなければ新規作成する (%s)', elements => {
+  it.each([undefined, null, {}, []])('既存の elements を変更しない (%s)', elements => {
     const settings = { display: {}, notation: { elements } }
     applyViewModeToSettings(settings, 'tab-rhythm')
-    expect(settings.notation.elements).toBeInstanceOf(Map)
-    expect(settings.notation.elements).toEqual(new Map([[12, true]]))
+    expect(settings.notation.elements).toBe(elements)
+  })
+
+  it.each(VIEW_MODES)('%s で未設定の elements を作成しない', mode => {
+    const settings = { display: {}, notation: {} }
+    applyViewModeToSettings(settings, mode)
+    expect(settings.notation).not.toHaveProperty('elements')
+  })
+
+  it.each([{}, { display: {} }, { notation: {} }])('未設定の display と notation を作成する (%s)', initial => {
+    const settings: any = initial
+    applyViewModeToSettings(settings, 'tab-rhythm')
+    expect(settings).toEqual({
+      display: { staveProfile: 3 },
+      notation: { rhythmMode: 2, rhythmHeight: 30 },
+    })
+  })
+
+  it('TAB のリズム表示から TAB のみに切り替えると高さを既定値に戻す', () => {
+    expect(TAB_RHYTHM_HEIGHT).toBe(30)
+    expect(ALPHATAB_DEFAULT_RHYTHM_HEIGHT).toBe(25)
+    const settings = { display: {}, notation: { rhythmHeight: 0 } }
+    applyViewModeToSettings(settings, 'tab-rhythm')
+    expect(settings.notation.rhythmHeight).toBe(30)
+    applyViewModeToSettings(settings, 'tab-only')
+    expect(settings.notation.rhythmHeight).toBe(25)
   })
 })
 

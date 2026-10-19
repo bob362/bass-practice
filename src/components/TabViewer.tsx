@@ -24,6 +24,7 @@ import {
   saveViewMode,
 } from '../utils/viewMode'
 import type { ViewMode } from '../utils/viewMode'
+import { enhanceTabRhythmDots } from './tabRhythmDots'
 
 // alphaTabのグローバルインポート
 declare global {
@@ -154,6 +155,25 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
   activeSectionRef.current = activeSectionId
   const viewModeRef = useRef(viewMode)
   viewModeRef.current = viewMode
+
+  // TAB+リズム表示では、描画された SVG が DOM に入るたびに付点を見やすく補正する
+  useEffect(() => {
+    const host = viewerRef.current
+    if (!host || typeof MutationObserver === 'undefined') return
+    let frame = 0
+    const run = () => {
+      frame = 0
+      if (viewModeRef.current === 'tab-rhythm') enhanceTabRhythmDots(host)
+    }
+    const observer = new MutationObserver(() => {
+      if (!frame) frame = requestAnimationFrame(run)
+    })
+    observer.observe(host, { childList: true, subtree: true })
+    return () => {
+      observer.disconnect()
+      if (frame) cancelAnimationFrame(frame)
+    }
+  }, [])
   /** 現在のループ周回の開始tickと、その周回中の最低テンポ */
   const passRef = useRef<{ startTick: number; minTempo: number } | null>(null)
   const positionListeners = useRef(new Set<PositionListener>())
@@ -283,12 +303,26 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
         display: {
           layoutMode: 'page',
           // staveProfile / rhythmMode は表示モードに応じて applyViewModeToSettings で設定する
+          scale: 1.1,
           resources: {
             staffLineColor: '#3a3a3a',
             barSeparatorColor: '#3a3a3a',
-            mainGlyphColor: '#e0e0e0',
-            secondaryGlyphColor: '#aaa',
+            mainGlyphColor: '#f2f2f2',
+            secondaryGlyphColor: '#c8c8c8',
             scoreInfoColor: '#ccc',
+            barNumberColor: '#e07070',
+            // barNumberFont は設定 JSON からは読まれない（1.8.4 のシリアライザに項目がない）ため、
+            // NotationElement.BarNumber のフォントとして渡す（キーは列挙名、値は CSS の font 文字列）
+            elementFonts: { barNumber: 'bold 12px Arial, sans-serif' },
+            // 値は px（display.scale 前）。alphaTab は連桁を「太さ＋間隔」ずつずらして重ねるため、
+            // 暗い背景でも 8分/16分/32分の本数が数えられるよう、間隔を太さより広めに取る
+            engravingSettings: {
+              beamThickness: 3.2,
+              beamSpacing: 4.4,
+              stemThickness: 1.6,
+              brokenBeamWidth: 12,
+              tupletBracketThickness: 1.6,
+            },
           }
         },
         notation: {

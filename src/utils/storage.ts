@@ -129,6 +129,8 @@ export interface SongMediaSettings {
   volume?: number
   /** 動画をミュートするか */
   muted?: boolean
+  /** 譜面（ベース）の音を鳴らさない。カーソルと同期は動いたまま */
+  tabMuted?: boolean
 }
 
 export const MEDIA_STORAGE_KEY = 'bass_practice_media'
@@ -148,7 +150,8 @@ export function isSongMediaSettings(value: unknown): value is SongMediaSettings 
     Number.isFinite(v.playbackRate) && v.playbackRate > 0 &&
     (v.volume === undefined || (typeof v.volume === 'number' && Number.isFinite(v.volume) &&
       v.volume >= 0 && v.volume <= 100)) &&
-    (v.muted === undefined || typeof v.muted === 'boolean')
+    (v.muted === undefined || typeof v.muted === 'boolean') &&
+    (v.tabMuted === undefined || typeof v.tabMuted === 'boolean')
 }
 
 export function getAllMediaSettings(): Record<string, SongMediaSettings> {

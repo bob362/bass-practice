@@ -165,6 +165,13 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
     api.timePosition = Math.max(0, tabSec) * 1000 / (api.playbackSpeed || 1)
   }, [])
 
+  /** 譜面の音を消す（masterVolume=0）。プレイヤーは動かしたままなのでカーソル・同期は維持される */
+  const tabMutedRef = useRef(false)
+  const setTabMuted = useCallback((muted: boolean) => {
+    tabMutedRef.current = muted
+    if (apiRef.current) apiRef.current.masterVolume = muted ? 0 : 1
+  }, [])
+
   const startPass = (startTick: number) => {
     passRef.current = { startTick, minTempo: tempoRef.current }
   }
@@ -352,6 +359,11 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
     }
   }, [tempo, isReady])
 
+  // 曲の読み込み直後にも譜面の音のオン/オフを反映
+  useEffect(() => {
+    if (apiRef.current && isReady) apiRef.current.masterVolume = tabMutedRef.current ? 0 : 1
+  }, [isReady])
+
   // PDFレンダリング
   useEffect(() => {
     if (pdfData && showPdf && pdfCanvasRef.current) {
@@ -517,6 +529,7 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
           playTab={playTab}
           pauseTab={pauseTab}
           seekTab={seekTab}
+          onTabMutedChange={setTabMuted}
         />
       </div>
       <div className="controls-panel">

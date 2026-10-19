@@ -240,3 +240,23 @@ it('quick YouTube pause/resume right after app play resumes the score', async ()
   await act(async () => { player.opts.events.onStateChange({ data: 1 }) })
   expect(tab.playTab).toHaveBeenCalledTimes(1)
 })
+
+it('bass sound toggle is saved per song and reported to the score', async () => {
+  saveSongMediaSettings('song1', { playthroughUrl: URL1 })
+  const onTabMutedChange = vi.fn()
+  await renderReady({ onTabMutedChange })
+  expect(onTabMutedChange).toHaveBeenLastCalledWith(false)
+  const btn = [...container.querySelectorAll('button')].find(b => b.textContent?.includes('ベース音'))!
+  await act(async () => { btn.click() })
+  expect(onTabMutedChange).toHaveBeenLastCalledWith(true)
+  expect(getSongMediaSettings('song1').tabMuted).toBe(true)
+  expect(btn.getAttribute('aria-pressed')).toBe('true')
+})
+
+it('old saved settings without tabMuted default to sound on', async () => {
+  localStorage.setItem('bass_practice_media', JSON.stringify({ song1: { playthroughUrl: URL1, playthroughOffsetSec: 0, originalOffsetSec: 0, playbackRate: 1 } }))
+  const onTabMutedChange = vi.fn()
+  await renderReady({ onTabMutedChange })
+  expect(onTabMutedChange).toHaveBeenLastCalledWith(false)
+  expect(getSongMediaSettings('song1').playbackRate).toBe(1)
+})

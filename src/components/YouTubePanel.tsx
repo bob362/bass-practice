@@ -49,9 +49,11 @@ interface YouTubePanelProps {
   pauseTab?: () => void
   /** 譜面を指定位置（100%テンポ基準の秒）にシークする */
   seekTab?: (tabSec: number) => void
+  /** 譜面の音を鳴らさない設定が変わったとき（曲の読み込み時にも呼ぶ） */
+  onTabMutedChange?: (muted: boolean) => void
 }
 
-export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTabSec, subscribePosition, playTab, pauseTab, seekTab }: YouTubePanelProps) {
+export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTabSec, subscribePosition, playTab, pauseTab, seekTab, onTabMutedChange }: YouTubePanelProps) {
   const [slot, setSlot] = useState<Slot>('playthrough')
   const [settings, setSettings] = useState<SongMediaSettings>(() => getSongMediaSettings(songId ?? ''))
   const [urlDraft, setUrlDraft] = useState('')
@@ -79,6 +81,7 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
   const videoId = video?.videoId ?? null
   const volume = settings.volume ?? 100
   const muted = settings.muted ?? false
+  const tabMuted = settings.tabMuted ?? false
 
   // 最新値をイベントハンドラから参照するためのref
   const syncRef = useRef({ syncEnabled, offsetSec, tempoPercent, playbackRate: settings.playbackRate, isTabPlaying })
@@ -304,6 +307,11 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
     }
   }, [syncEnabled, isPlayerReady, checkVideoSeek])
 
+  // 譜面の音のオン/オフを譜面側に伝える
+  useEffect(() => {
+    onTabMutedChange?.(tabMuted)
+  }, [tabMuted, onTabMutedChange])
+
   // 音量・ミュートをプレイヤーに反映
   useEffect(() => {
     if (!isPlayerReady || !playerRef.current) return
@@ -525,6 +533,15 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
               aria-pressed={syncEnabled}
             >
               🔗 譜面と一緒に再生{syncEnabled ? '：オン' : '：オフ'}
+            </button>
+            <button
+              className={`button ${tabMuted ? 'button-primary' : 'button-secondary'} button-small`}
+              onClick={() => update({ tabMuted: !tabMuted })}
+              disabled={!songId}
+              aria-pressed={tabMuted}
+              title="カーソルと同期はそのまま、譜面のベース音だけ消します"
+            >
+              {tabMuted ? '🔇 ベース音：オフ' : '🔊 ベース音：オン'}
             </button>
           </div>
 

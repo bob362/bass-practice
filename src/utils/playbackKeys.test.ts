@@ -230,3 +230,8 @@ describe('space on focused buttons', () => {
     expect(isPlainButtonTarget(input)).toBe(false)
   })
 })
+
+it('button with role=radio is not a plain button', () => {
+  const b = document.createElement('button'); b.setAttribute('role', 'radio'); document.body.appendChild(b)
+  expect(isPlainButtonTarget(b)).toBe(false)
+})

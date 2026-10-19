@@ -38,7 +38,11 @@ export function isPlainButtonTarget(target: EventTarget | null): boolean {
   if (!target || typeof (target as Element).closest !== 'function') return false
   const element = target as Element
   if (element.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return false
-  return element.closest('button, [role="button"]') !== null
+  const btn = element.closest('button, [role="button"]')
+  if (!btn) return false
+  // role=radio 等のボタン（表示切替など）はスペースで選択させる
+  const role = btn.getAttribute('role')
+  return role === null || role === 'button'
 }
 
 export type PlayPauseKeyAction = 'toggle' | 'consume' | 'ignore'

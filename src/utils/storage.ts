@@ -1,3 +1,4 @@
+import { ensureUpdatedAt, type MediaDoc } from '../shared/syncMerge'
 /**
  * 変換済みタブ譜のlocalStorage管理
  */
@@ -21,14 +22,56 @@ const STORAGE_KEY = 'bass_practice_songs'
 /**
  * 全ての曲を取得
  */
-export function getAllSongs(): ConvertedSong[] {
-  try {
-    const data = localStorage.getItem(STORAGE_KEY)
-    return data ? JSON.parse(data) : []
-  } catch (error) {
-    console.error('Failed to load songs:', error)
-    return []
+export type LocalChange = {kind:'song-saved'; id:string} | {kind:'song-deleted'; id:string; deletedAt:number} | {kind:'media'; songId:string} | {kind:'progress'} | {kind:'all'}
+export const LOCAL_CHANGE_EVENT = 'bass-practice:local-change'
+export function notifyLocalChange(c: LocalChange) {
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(LOCAL_CHANGE_EVENT, { detail: c }))
+}
+const memorySongs = new Map<string, ConvertedSong>()
+const TOMBSTONES_KEY = 'bass_practice_song_tombstones'
+const MEDIA_META_KEY = 'bass_practice_media_meta'
+function readMap<T>(key: string): Record<string, T> {
+  try { const v = JSON.parse(localStorage.getItem(key) ?? '{}'); return v && typeof v === 'object' && !Array.isArray(v) ? v : {} } catch { return {} }
+}
+export const getSongTombstones = (): Record<string, number> => readMap(TOMBSTONES_KEY)
+export function setSongTombstones(t: Record<string, number>) { localStorage.setItem(TOMBSTONES_KEY, JSON.stringify(t)) }
+function clearTombstones(ids: string[]) {
+  const t = getSongTombstones()
+  for (const id of ids) delete t[id]
+  try { setSongTombstones(t) } catch { console.warn('Unable to persist song tombstones') }
+}
+function writeSongs(songs: ConvertedSong[], preferEvict: string[] = []) {
+  memorySongs.clear()
+  const remaining = [...songs]
+  for (;;) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(remaining)); return }
+    catch {
+      console.warn('Song storage full; keeping songs in memory for cloud sync')
+      if (!remaining.length) {
+        for (const song of songs) memorySongs.set(song.id, song)
+        try { localStorage.removeItem(STORAGE_KEY) } catch { /* Storage may be entirely unavailable. */ }
+        return
+      }
+      let largest = remaining.findIndex(s => preferEvict.includes(s.id))
+      const preferred = largest >= 0
+      if (!preferred) largest = 0
+      for (let i = 1; i < remaining.length; i++) if (!preferred && JSON.stringify(remaining[i]).length > JSON.stringify(remaining[largest]).length) largest = i
+      const [song] = remaining.splice(largest, 1)
+      memorySongs.set(song.id, song)
+    }
   }
+}
+export function getAllSongs(): ConvertedSong[] {
+  let stored: ConvertedSong[] = []
+  try { const data = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]'); if (Array.isArray(data)) stored = data } catch { /* Use memory when storage is unavailable. */ }
+  return [...new Map([...stored, ...memorySongs.values()].map(s => [s.id, ensureUpdatedAt(s, 0)])).values()]
+}
+export function putSongsFromRemote(songs: ConvertedSong[]) {
+  writeSongs([...new Map([...getAllSongs(), ...songs].map(s => [s.id, s])).values()], songs.map(s => s.id))
+  clearTombstones(songs.map(s => s.id))
+}
+export function removeSongsFromRemote(ids: string[]) {
+  writeSongs(getAllSongs().filter(s => !ids.includes(s.id)))
 }
 
 /**
@@ -46,7 +89,9 @@ export function saveSong(song: Omit<ConvertedSong, 'id' | 'createdAt' | 'updated
   }
   
   songs.push(newSong)
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(songs))
+  writeSongs(songs, [newSong.id])
+  clearTombstones([newSong.id])
+  notifyLocalChange({kind: 'song-saved', id: newSong.id})
   
   return newSong
 }
@@ -66,7 +111,9 @@ export function updateSong(id: string, updates: Partial<Omit<ConvertedSong, 'id'
     updatedAt: Date.now(),
   }
   
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(songs))
+  writeSongs(songs, [id])
+  clearTombstones([id])
+  notifyLocalChange({kind: 'song-saved', id})
   return songs[index]
 }
 
@@ -79,7 +126,10 @@ export function deleteSong(id: string): boolean {
   
   if (filtered.length === songs.length) return false
   
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered))
+  writeSongs(filtered)
+  const deletedAt = Date.now()
+  setSongTombstones({ ...getSongTombstones(), [id]: deletedAt })
+  notifyLocalChange({kind: 'song-deleted', id, deletedAt})
   return true
 }
 
@@ -175,5 +225,30 @@ export function saveSongMediaSettings(songId: string, updates: Partial<SongMedia
   const settings = { ...getSongMediaSettings(songId), ...normalized }
   if (!isSongMediaSettings(settings)) throw new Error('Invalid media settings')
   localStorage.setItem(MEDIA_STORAGE_KEY, JSON.stringify({ ...getAllMediaSettings(), [songId]: settings }))
+  localStorage.setItem(MEDIA_META_KEY, JSON.stringify({ ...readMap<number>(MEDIA_META_KEY), [songId]: Date.now() }))
+  notifyLocalChange({kind: 'media', songId})
   return settings
+}
+
+export function getMediaSyncDoc(): MediaDoc {
+  const meta = readMap<number>(MEDIA_META_KEY)
+  const settings = getAllMediaSettings()
+  return { version: 1, entries: Object.fromEntries([...new Set([...Object.keys(settings), ...Object.keys(meta)])].map(id => [id, {updatedAt: meta[id] ?? 0, settings: settings[id] ?? null}])) }
+}
+export function applyMediaSyncDoc(doc: MediaDoc) {
+  const settings = getAllMediaSettings(), meta = readMap<number>(MEDIA_META_KEY)
+  for (const [id, entry] of Object.entries(doc.entries)) {
+    if (entry.settings === null) delete settings[id]
+    else if (isSongMediaSettings(entry.settings)) settings[id] = entry.settings
+    else continue
+    meta[id] = entry.updatedAt
+  }
+  localStorage.setItem(MEDIA_STORAGE_KEY, JSON.stringify(settings))
+  localStorage.setItem(MEDIA_META_KEY, JSON.stringify(meta))
+}
+
+export function touchMediaMeta(ids: string[], at: number) {
+  const meta = readMap<number>(MEDIA_META_KEY)
+  for (const id of ids) meta[id] = at
+  localStorage.setItem(MEDIA_META_KEY, JSON.stringify(meta))
 }

@@ -8,6 +8,7 @@ import { saveSong, getAllSongs, ConvertedSong, deleteSong, pdfToBase64 } from '.
 import {
   GUITAR_PRO_ACCEPT, MAX_GUITAR_PRO_BYTES, bytesToBase64, guitarProFormatFromName, looksLikeGuitarPro, titleFromFileName,
 } from '../../utils/guitarPro'
+import { SONGS_CHANGED_EVENT } from '../../utils/cloudSync'
 import './PDFImport.css'
 
 configurePdfjsWorker()
@@ -33,6 +34,10 @@ export default function PDFImport({ onSongSelected }: PDFImportProps) {
 
   useEffect(() => {
     loadSavedSongs()
+    // クラウドから曲が反映されたら一覧を読み直す
+    const onSongsChanged = () => setSavedSongs(getAllSongs())
+    window.addEventListener(SONGS_CHANGED_EVENT, onSongsChanged)
+    return () => window.removeEventListener(SONGS_CHANGED_EVENT, onSongsChanged)
   }, [])
 
   const loadSavedSongs = () => {

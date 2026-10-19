@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+.dev.vars
+.wrangler
+
+worker/tsconfig.tsbuildinfo

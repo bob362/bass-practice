@@ -47,7 +47,6 @@ function App() {
   return (
     <div className="app">
       <header className="header">
-        <h1>🎸 ベース練習アプリ</h1>
         <div className="header-right">
           <SyncStatusIndicator />
           <div className="header-nav">

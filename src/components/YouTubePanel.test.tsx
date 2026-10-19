@@ -20,6 +20,7 @@ class FakePlayer {
     events: {
       onReady: (event: { target: unknown }) => void
       onStateChange: (event: { data: number }) => void
+      onPlaybackRateChange?: (event: { data: number }) => void
     }
   }
   vol = 100
@@ -31,8 +32,10 @@ class FakePlayer {
   getVolume = vi.fn(() => this.vol)
   isMuted = vi.fn(() => this.m)
   destroy = vi.fn()
-  getPlayerState = vi.fn(() => 2)
-  getCurrentTime = vi.fn(() => 0)
+  state = 2
+  time = 0
+  getPlayerState = vi.fn(() => this.state)
+  getCurrentTime = vi.fn(() => this.time)
   getDuration = vi.fn(() => 100)
   playVideo = vi.fn()
   pauseVideo = vi.fn()
@@ -85,8 +88,8 @@ async function flushPromises() {
   }
 }
 
-async function renderReady() {
-  await act(async () => { root.render(<YouTubePanel {...props} />) })
+async function renderReady(extra: Partial<React.ComponentProps<typeof YouTubePanel>> = {}) {
+  await act(async () => { root.render(<YouTubePanel {...props} {...extra} />) })
   await flushPromises()
   expect(players.length).toBe(1)
   await act(async () => { players[0].opts.events.onReady({ target: players[0] }) })
@@ -147,4 +150,113 @@ it('poll picks up volume changed in YouTube controls', async () => {
   expect(getSongMediaSettings('song1').volume).toBe(25)
   const input = container.querySelector<HTMLInputElement>('input[aria-label="動画の音量"]')!
   expect(input.value).toBe('25')
+})
+
+const URL1 = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+const FAKE = { toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'performance', 'Date'] } as const
+
+async function setupSync(extra: Partial<React.ComponentProps<typeof YouTubePanel>> = {}) {
+  vi.useFakeTimers({ toFake: [...FAKE.toFake] })
+  saveSongMediaSettings('song1', { playthroughUrl: URL1 })
+  const tab = { playTab: vi.fn(), pauseTab: vi.fn(), seekTab: vi.fn() }
+  await renderReady({ ...tab, ...extra })
+  const toggle = [...container.querySelectorAll('button')].find(b => b.textContent?.includes('譜面と一緒に再生'))!
+  await act(async () => { toggle.click() })
+  await act(async () => { vi.advanceTimersByTime(1500) })
+  return { tab, player: players[0] }
+}
+
+it('video play from YouTube controls starts and aligns the score', async () => {
+  const { tab, player } = await setupSync()
+  player.time = 30
+  await act(async () => { player.opts.events.onStateChange({ data: 1 }) })
+  expect(tab.seekTab).toHaveBeenCalledWith(30)
+  expect(tab.playTab).toHaveBeenCalledTimes(1)
+})
+
+it('video pause from YouTube controls pauses the score', async () => {
+  const { tab, player } = await setupSync()
+  await act(async () => { root.render(<YouTubePanel {...props} {...tab} isTabPlaying />) })
+  await act(async () => { vi.advanceTimersByTime(1500) })
+  await act(async () => { player.opts.events.onStateChange({ data: 2 }) })
+  expect(tab.pauseTab).toHaveBeenCalledTimes(1)
+})
+
+it('app-originated play/pause does not loop back into the score', async () => {
+  const { tab, player } = await setupSync()
+  await act(async () => { root.render(<YouTubePanel {...props} {...tab} isTabPlaying />) })
+  expect(player.playVideo).toHaveBeenCalled()
+  await act(async () => { player.opts.events.onStateChange({ data: 1 }) })
+  expect(tab.playTab).not.toHaveBeenCalled()
+  await act(async () => { root.render(<YouTubePanel {...props} {...tab} isTabPlaying={false} />) })
+  expect(player.pauseVideo).toHaveBeenCalled()
+  await act(async () => { player.opts.events.onStateChange({ data: 2 }) })
+  expect(tab.pauseTab).not.toHaveBeenCalled()
+})
+
+it('sync off: video events do not drive the score', async () => {
+  vi.useFakeTimers({ toFake: [...FAKE.toFake] })
+  saveSongMediaSettings('song1', { playthroughUrl: URL1 })
+  const tab = { playTab: vi.fn(), pauseTab: vi.fn(), seekTab: vi.fn() }
+  await renderReady(tab)
+  await act(async () => { vi.advanceTimersByTime(1500) })
+  await act(async () => { players[0].opts.events.onStateChange({ data: 1 }) })
+  expect(tab.playTab).not.toHaveBeenCalled()
+})
+
+it('seeking the video seeks the score', async () => {
+  const { tab, player } = await setupSync()
+  player.time = 10
+  await act(async () => { vi.advanceTimersByTime(2000) })
+  tab.seekTab.mockClear()
+  player.time = 10.3
+  await act(async () => { vi.advanceTimersByTime(250) })
+  expect(tab.seekTab).not.toHaveBeenCalled()
+  player.time = 50
+  await act(async () => { vi.advanceTimersByTime(250) })
+  expect(tab.seekTab).toHaveBeenCalledTimes(1)
+  expect(tab.seekTab.mock.calls[0][0]).toBeCloseTo(50)
+})
+
+it('play button under the video drives the score when sync is on', async () => {
+  const { tab } = await setupSync()
+  const btn = [...container.querySelectorAll('button')].find(b => b.textContent?.includes('▶ 再生'))!
+  await act(async () => { btn.click() })
+  expect(tab.playTab).toHaveBeenCalledTimes(1)
+})
+
+it('rate change in YouTube is saved', async () => {
+  const { player } = await setupSync()
+  await act(async () => { player.opts.events.onPlaybackRateChange?.({ data: 0.75 }) })
+  expect(getSongMediaSettings('song1').playbackRate).toBe(0.75)
+})
+
+it('quick YouTube pause/resume right after app play resumes the score', async () => {
+  const { tab, player } = await setupSync()
+  await act(async () => { root.render(<YouTubePanel {...props} {...tab} isTabPlaying />) })
+  await act(async () => { player.opts.events.onStateChange({ data: 2 }) })
+  expect(tab.pauseTab).toHaveBeenCalledTimes(1)
+  await act(async () => { root.render(<YouTubePanel {...props} {...tab} isTabPlaying={false} />) })
+  await act(async () => { player.opts.events.onStateChange({ data: 1 }) })
+  expect(tab.playTab).toHaveBeenCalledTimes(1)
+})
+
+it('bass sound toggle is saved per song and reported to the score', async () => {
+  saveSongMediaSettings('song1', { playthroughUrl: URL1 })
+  const onTabMutedChange = vi.fn()
+  await renderReady({ onTabMutedChange })
+  expect(onTabMutedChange).toHaveBeenLastCalledWith(false)
+  const btn = [...container.querySelectorAll('button')].find(b => b.textContent?.includes('ベース音'))!
+  await act(async () => { btn.click() })
+  expect(onTabMutedChange).toHaveBeenLastCalledWith(true)
+  expect(getSongMediaSettings('song1').tabMuted).toBe(true)
+  expect(btn.getAttribute('aria-pressed')).toBe('true')
+})
+
+it('old saved settings without tabMuted default to sound on', async () => {
+  localStorage.setItem('bass_practice_media', JSON.stringify({ song1: { playthroughUrl: URL1, playthroughOffsetSec: 0, originalOffsetSec: 0, playbackRate: 1 } }))
+  const onTabMutedChange = vi.fn()
+  await renderReady({ onTabMutedChange })
+  expect(onTabMutedChange).toHaveBeenLastCalledWith(false)
+  expect(getSongMediaSettings('song1').playbackRate).toBe(1)
 })

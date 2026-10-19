@@ -968,3 +968,19 @@
 .at-surface-host {
   position: relative;
 }
+/* TAB+リズムの付点を連桁の下へずらすため、各段の SVG 外にはみ出しても切り取らない */
+.at-surface-host svg {
+  overflow: visible;
+}
+
+/* 譜面の表示モード切り替え（セグメント型） */
+.view-mode-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.view-mode-toggle .button {
+  flex: 1 1 auto;
+}

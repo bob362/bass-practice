@@ -195,12 +195,14 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
     }
     const now = performance.now()
     const baseline = seekBaseline.current
-    seekBaseline.current = { videoSec: actual, at: now, playing }
-    if (!baseline || !Number.isFinite(actual)) return false
+    const sample = { videoSec: actual, at: now, playing }
+    if (!baseline || !Number.isFinite(actual)) { seekBaseline.current = sample; return false }
     const elapsedSec = (now - baseline.at) / 1000
     const predicted = baseline.videoSec + (baseline.playing ? elapsedSec * syncRef.current.playbackRate : 0)
-    if (Math.abs(actual - predicted) <= SEEK_DETECT_SEC) return false
+    if (Math.abs(actual - predicted) <= SEEK_DETECT_SEC) { seekBaseline.current = sample; return false }
+    // 抑制中は基準を更新しない（抑制明けにユーザーのシークを検出できるように）
     if (now - lastSeekAt.current < SEEK_SETTLE_MS || withinCommand()) return false
+    seekBaseline.current = sample
     const { seekTab } = tabRef.current
     if (!seekTab) return false
     const tabSec = videoToTabSec(actual)
@@ -249,10 +251,14 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
               if (isTabPlaying || withinCommand('play') || !playTab) return
               syncTabToVideo(player)
               playTab()
+              commandAt.current.pause = -Infinity
             } else if (event.data === YTApi.PlayerState.PAUSED) {
               // ユーザーが動画を一時停止した。プリロールや動画終了でアプリが止めた場合は譜面を止めない
               if (!isTabPlaying || withinCommand('pause') || !pauseTab) return
               pauseTab()
+              // 直後にユーザーが再開したPLAYINGを自分の命令と誤認しないように
+              commandAt.current.play = -Infinity
+              lastCommand.current = null
             }
             // BUFFERING / ENDED / CUED / UNSTARTED は無視
           },

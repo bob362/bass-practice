@@ -230,3 +230,13 @@ it('rate change in YouTube is saved', async () => {
   await act(async () => { player.opts.events.onPlaybackRateChange?.({ data: 0.75 }) })
   expect(getSongMediaSettings('song1').playbackRate).toBe(0.75)
 })
+
+it('quick YouTube pause/resume right after app play resumes the score', async () => {
+  const { tab, player } = await setupSync()
+  await act(async () => { root.render(<YouTubePanel {...props} {...tab} isTabPlaying />) })
+  await act(async () => { player.opts.events.onStateChange({ data: 2 }) })
+  expect(tab.pauseTab).toHaveBeenCalledTimes(1)
+  await act(async () => { root.render(<YouTubePanel {...props} {...tab} isTabPlaying={false} />) })
+  await act(async () => { player.opts.events.onStateChange({ data: 1 }) })
+  expect(tab.playTab).toHaveBeenCalledTimes(1)
+})

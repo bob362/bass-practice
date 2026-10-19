@@ -1,9 +1,17 @@
 {
-  // Cloudflare Workers (Static Assets) 用設定。静的 SPA のみ、Worker コードなし。
+  // Cloudflare Worker API・R2 と静的 SPA 用設定。
   "name": "bass-practice",
+  "main": "worker/index.ts",
   "compatibility_date": "2026-10-01",
   "assets": {
     "directory": "./dist",
-    "not_found_handling": "single-page-application"
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "r2_buckets": [{ "binding": "DATA", "bucket_name": "bass-practice-data" }],
+  "vars": {
+    "ACCESS_TEAM_DOMAIN": "dry-waterfall-fe17.cloudflareaccess.com",
+    "ACCESS_AUD": "c9fbd4231ca341f77b21022d415f579351b7d86a851853aeff5494be2549ffe1"
   }
 }

@@ -1,3 +1,5 @@
+import { sectionKey, type ProgressDoc } from '../shared/syncMerge'
+import { notifyLocalChange, touchMediaMeta, getSongTombstones, setSongTombstones } from './storage'
 import { getAllSongs, getAllMediaSettings, isSongMediaSettings, SONGS_STORAGE_KEY, MEDIA_STORAGE_KEY } from './storage'
 import type { ConvertedSong, SongMediaSettings } from './storage'
 
@@ -42,7 +44,11 @@ function read(): ProgressData {
     return progressValid(value) ? { ...value, accuracy: value.accuracy ?? [] } : empty()
   } catch { return empty() }
 }
-const write = (data: ProgressData) => localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(data))
+const write = (data: ProgressData) => { localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(data)); notifyLocalChange({kind:'progress'}) }
+const SECTION_TOMBSTONES_KEY = 'bass_practice_section_tombstones'
+function sectionTombstones(): Record<string, string> {
+  try { const v = JSON.parse(localStorage.getItem(SECTION_TOMBSTONES_KEY) ?? '{}'); return record(v) ? v as Record<string, string> : {} } catch { return {} }
+}
 const newId = () => crypto.randomUUID()
 export function addSession(input: Omit<PracticeSession, 'id'> & { id?: string }): PracticeSession {
   const session = { ...input, id: input.id ?? newId() }
@@ -79,6 +85,9 @@ export function upsertSection(input: Omit<PracticeSection, 'id' | 'updatedAt' | 
   if (!sectionValid(section)) throw new Error('Invalid practice section')
   if (index < 0) data.sections.push(section)
   else data.sections[index] = section
+  const tombstones = sectionTombstones()
+  delete tombstones[sectionKey(section.songId, section.id)]
+  localStorage.setItem(SECTION_TOMBSTONES_KEY, JSON.stringify(tombstones))
   write(data)
   return section
 }
@@ -87,6 +96,7 @@ export function deleteSection(songId: string, id: string): boolean {
   const length = data.sections.length
   data.sections = data.sections.filter(s => s.songId !== songId || s.id !== id)
   if (length === data.sections.length) return false
+  localStorage.setItem(SECTION_TOMBSTONES_KEY, JSON.stringify({...sectionTombstones(), [sectionKey(songId, id)]: new Date().toISOString()}))
   write(data)
   return true
 }
@@ -116,6 +126,7 @@ export function importAllJSON(json: string, options: 'merge' | 'replace' | { mod
   if (!['merge', 'replace'].includes(mode) || !record(value) || value.version !== 1 || !Array.isArray(value.songs) || !value.songs.every(songValid) ||
     new Set(value.songs.map(s => s.id)).size !== value.songs.length || !record(value.media) || !Object.values(value.media).every(isSongMediaSettings) || !progressValid(value.progress)) throw new Error('Invalid or unsupported practice backup')
   const imported = value as unknown as PracticeBackup
+  const localSongs = getAllSongs(), localSections = read().sections
   let songs = imported.songs, media = imported.media, progress = { ...imported.progress, accuracy: imported.progress.accuracy ?? [] }
   if (mode === 'merge') {
     songs = [...new Map([...getAllSongs(), ...songs].map(s => [s.id, s])).values()]
@@ -137,6 +148,17 @@ export function importAllJSON(json: string, options: 'merge' | 'replace' | { mod
     for (const [key, data] of previous) { try { if (data === null) localStorage.removeItem(key); else localStorage.setItem(key, data) } catch { /* Best-effort rollback when storage is unavailable. */ } }
     throw error
   }
+  const now = Date.now(), songTombstones = getSongTombstones(), deletedSections = sectionTombstones()
+  if (mode === 'replace') {
+    for (const song of localSongs) if (!imported.songs.some(s => s.id === song.id)) songTombstones[song.id] = now
+    for (const section of localSections) if (!imported.progress.sections.some(s => sectionKey(s.songId,s.id) === sectionKey(section.songId,section.id))) deletedSections[sectionKey(section.songId,section.id)] = new Date(now).toISOString()
+  }
+  for (const song of imported.songs) delete songTombstones[song.id]
+  for (const section of imported.progress.sections) delete deletedSections[sectionKey(section.songId,section.id)]
+  setSongTombstones(songTombstones)
+  localStorage.setItem(SECTION_TOMBSTONES_KEY, JSON.stringify(deletedSections))
+  touchMediaMeta(Object.keys(imported.media), now)
+  notifyLocalChange({kind:'all'})
 }
 
 export function addAccuracyRecord(input: Omit<AccuracyRecord, 'id'> & { id?: string }): AccuracyRecord {
@@ -153,4 +175,18 @@ export function listAccuracyRecords(songId: string, sectionId?: string): Accurac
 }
 export function bestAccuracy(songId: string, sectionId?: string): number {
   return Math.max(0, ...listAccuracyRecords(songId, sectionId).map(a => a.accuracy))
+}
+
+export function getProgressSyncDoc(): ProgressDoc {
+  const data = read()
+  return {version: 1, sessions: data.sessions.map(s => ({...s})), sections: data.sections.map(s => ({...s})), accuracy: (data.accuracy ?? []).map(s => ({...s})), deletedSections: sectionTombstones()}
+}
+export function applyProgressSyncDoc(doc: ProgressDoc) {
+  function clean<T>(items: unknown[], valid: (v: unknown) => v is T, key: (v: T) => string): T[] {
+    const seen = new Set<string>()
+    return items.filter(valid).filter(v => { const k = key(v); if (seen.has(k)) return false; seen.add(k); return true })
+  }
+  const data: ProgressData = {version: 1, sessions: clean(doc.sessions, sessionValid, s => s.id), sections: clean(doc.sections, sectionValid, s => sectionKey(s.songId, s.id)), accuracy: clean(doc.accuracy, accuracyValid, s => s.id)}
+  localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(data))
+  localStorage.setItem(SECTION_TOMBSTONES_KEY, JSON.stringify(doc.deletedSections))
 }

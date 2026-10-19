@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   MEDIA_STORAGE_KEY,
   getSongMediaSettings,
@@ -57,4 +57,72 @@ describe('storage SongMediaSettings', () => {
     expect(() => saveSongMediaSettings('song1', { volume: NaN })).toThrow('Invalid media settings')
     expect(() => saveSongMediaSettings('song1', { volume: Infinity })).toThrow('Invalid media settings')
   })
+})
+
+// Cloud storage metadata and large song fallback.
+describe('cloud storage', () => {
+  beforeEach(() => localStorage.clear())
+  it('records deletion tombstones and clears them when remote data restores a song', async () => {
+    const s = await import('./storage')
+    const song = s.saveSong({title:'test', texData:'tab'})
+    expect(s.deleteSong(song.id)).toBe(true)
+    expect(s.getSongTombstones()[song.id]).toBeGreaterThan(0)
+    s.putSongsFromRemote([song])
+    expect(s.getSongTombstones()[song.id]).toBeUndefined()
+    s.removeSongsFromRemote([song.id])
+    expect(s.getSongTombstones()[song.id]).toBeUndefined()
+  })
+  it('tracks media timestamps and applies null settings without notifying', async () => {
+    const s = await import('./storage')
+    s.saveSongMediaSettings('media', {volume:10})
+    expect(s.getMediaSyncDoc().entries.media.updatedAt).toBeGreaterThan(0)
+    s.applyMediaSyncDoc({version:1, entries:{media:{updatedAt:123, settings:null}}})
+    expect(s.getAllMediaSettings().media).toBeUndefined()
+    expect(s.getMediaSyncDoc().entries.media).toEqual({updatedAt:123, settings:null})
+  })
+  it('keeps oversized songs in memory while smaller songs fit on disk', async () => {
+    const s = await import('./storage')
+    const original = Storage.prototype.setItem
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function(this: Storage, key, value) {
+      if (key === s.SONGS_STORAGE_KEY && value.length > 500) throw new DOMException('full', 'QuotaExceededError')
+      original.call(this, key, value)
+    })
+    try {
+      const big = s.saveSong({title:'big', texData:'x'.repeat(1000)})
+      spy.mockImplementation(function(this: Storage,key,value) { original.call(this,key,value) })
+      const small = s.saveSong({title:'small', texData:'tab'})
+      spy.mockImplementation(function(this: Storage, key, value) {
+        if (key === s.SONGS_STORAGE_KEY && value.length > 500) throw new DOMException('full', 'QuotaExceededError')
+        original.call(this, key, value)
+      })
+      s.updateSong(big.id, {title:'big updated'})
+      expect(s.getSongById(big.id)?.texData).toHaveLength(1000)
+      expect(JSON.parse(localStorage.getItem(s.SONGS_STORAGE_KEY)!)).toEqual([small])
+      s.deleteSong(big.id); s.deleteSong(small.id)
+    } finally { spy.mockRestore() }
+  })
+})
+
+it('evicts a newly saved song before a larger persisted song', async () => {
+  const s = await import('./storage')
+  localStorage.clear()
+  const old = s.saveSong({title:'persisted',texData:'x'.repeat(1000)})
+  const original = Storage.prototype.setItem
+  const spy = vi.spyOn(Storage.prototype,'setItem').mockImplementation(function(this: Storage,key,value) {
+    if (key === s.SONGS_STORAGE_KEY && value.length > 1400) throw new DOMException('full','QuotaExceededError')
+    original.call(this,key,value)
+  })
+  try {
+    const added = s.saveSong({title:'new',texData:'x'.repeat(500)})
+    expect(JSON.parse(localStorage.getItem(s.SONGS_STORAGE_KEY)!)).toEqual([old])
+    expect(s.getSongById(added.id)).not.toBeNull()
+    s.deleteSong(added.id); s.deleteSong(old.id)
+  } finally { spy.mockRestore() }
+})
+it('backfills missing timestamps consistently', async () => {
+  const s = await import('./storage')
+  localStorage.setItem(s.SONGS_STORAGE_KEY,JSON.stringify([{id:'legacy',createdAt:12},{id:'fallback'}]))
+  expect(s.getAllSongs().map(s => s.updatedAt)).toEqual([12,0])
+  expect(s.getAllSongs().map(s => s.updatedAt)).toEqual([12,0])
+  localStorage.clear()
 })

@@ -4,6 +4,7 @@ import { tabToVideoTime, videoToTabTime } from '../utils/sync'
 import { getSongMediaSettings, saveSongMediaSettings } from '../utils/storage'
 import type { SongMediaSettings } from '../utils/storage'
 import { applyVolume, readPlayerVolume } from '../utils/youtubeVolume'
+import { SONGS_CHANGED_EVENT } from '../utils/cloudSync'
 
 type Slot = 'playthrough' | 'original'
 
@@ -98,6 +99,14 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
     const loaded = getSongMediaSettings(songId ?? '')
     setSettings(loaded)
     setSyncEnabled(false)
+  }, [songId])
+
+  // クラウドから動画設定が反映されたら読み直す（入力中の下書きはURL/オフセットが変わったときだけ上書きされる）
+  useEffect(() => {
+    if (!songId) return
+    const onSongsChanged = () => setSettings(getSongMediaSettings(songId))
+    window.addEventListener(SONGS_CHANGED_EVENT, onSongsChanged)
+    return () => window.removeEventListener(SONGS_CHANGED_EVENT, onSongsChanged)
   }, [songId])
 
   useEffect(() => {

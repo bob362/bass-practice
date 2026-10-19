@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import './App.css'
 import TabViewer from './components/TabViewer'
 import PDFImport from './components/pdf-import/PDFImport'
 import Dashboard from './components/Dashboard'
+import SyncStatusIndicator from './components/SyncStatusIndicator'
+import { startCloudSync } from './utils/cloudSync'
 import type { ConvertedSong } from './utils/storage'
 import { base64ToArrayBuffer } from './utils/guitarPro'
 
@@ -13,6 +15,10 @@ function App() {
   const [currentFile, setCurrentFile] = useState<string | ArrayBuffer>('/sample-bass.tex')
   const [currentPdf, setCurrentPdf] = useState<string | null>(null)
   const [currentSongId, setCurrentSongId] = useState<string | null>(null)
+
+  useEffect(() => {
+    startCloudSync().catch(() => {})
+  }, [])
 
   const handleFileImport = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -42,25 +48,28 @@ function App() {
     <div className="app">
       <header className="header">
         <h1>🎸 ベース練習アプリ</h1>
-        <div className="header-nav">
-          <button 
-            className={`nav-button ${view === 'practice' ? 'active' : ''}`}
-            onClick={() => setView('practice')}
-          >
-            練習
-          </button>
-          <button 
-            className={`nav-button ${view === 'dashboard' ? 'active' : ''}`}
-            onClick={() => setView('dashboard')}
-          >
-            ダッシュボード
-          </button>
-          <button 
-            className={`nav-button ${view === 'import' ? 'active' : ''}`}
-            onClick={() => setView('import')}
-          >
-            曲の管理
-          </button>
+        <div className="header-right">
+          <SyncStatusIndicator />
+          <div className="header-nav">
+            <button 
+              className={`nav-button ${view === 'practice' ? 'active' : ''}`}
+              onClick={() => setView('practice')}
+            >
+              練習
+            </button>
+            <button 
+              className={`nav-button ${view === 'dashboard' ? 'active' : ''}`}
+              onClick={() => setView('dashboard')}
+            >
+              ダッシュボード
+            </button>
+            <button 
+              className={`nav-button ${view === 'import' ? 'active' : ''}`}
+              onClick={() => setView('import')}
+            >
+              曲の管理
+            </button>
+          </div>
         </div>
       </header>
       <div className="main-content">

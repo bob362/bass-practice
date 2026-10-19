@@ -4,6 +4,7 @@ import type { ConvertedSong } from '../utils/storage'
 import { bestAccuracy, exportAllJSON, importAllJSON, listAccuracyRecords, listSections, listSessions, songProgress, streakDays, totalPracticeSec } from '../utils/progress'
 import type { AccuracyRecord } from '../utils/progress'
 import { SIMPLIFY_LEVEL_LABELS } from './SimplifyPanel'
+import { SONGS_CHANGED_EVENT } from '../utils/cloudSync'
 
 interface DashboardProps {
   onOpenSong: (song: ConvertedSong) => void
@@ -75,6 +76,12 @@ export default function Dashboard({ onOpenSong }: DashboardProps) {
   }, [])
 
   useEffect(() => { refresh() }, [refresh])
+
+  // クラウドから曲・進捗が反映されたら読み直す
+  useEffect(() => {
+    window.addEventListener(SONGS_CHANGED_EVENT, refresh)
+    return () => window.removeEventListener(SONGS_CHANGED_EVENT, refresh)
+  }, [refresh])
 
   const handleExport = () => {
     try {

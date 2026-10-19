@@ -15,7 +15,7 @@ import SimplifyPanel from './SimplifyPanel'
 import type { SimplifyResult } from './SimplifyPanel'
 import { extractPlainScore } from '../utils/scoreModel'
 import type { PlainScore } from '../utils/scoreModel'
-import { getPlayPauseKeyAction, rewindToStart } from '../utils/playbackKeys'
+import { getPlayPauseKeyAction, isPlainButtonTarget, rewindToStart } from '../utils/playbackKeys'
 
 // alphaTabのグローバルインポート
 declare global {
@@ -419,8 +419,17 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
       e.preventDefault()
       if (action === 'toggle') handlePlayPauseRef.current()
     }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    // ボタン上でスペースを離したときのクリック（再押下）を抑止する
+    const onKeyUp = (e: KeyboardEvent) => {
+      const isSpace = e.code === 'Space' || e.key === ' '
+      if (isSpace && isPlainButtonTarget(e.target)) e.preventDefault()
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    window.addEventListener('keyup', onKeyUp, true)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true)
+      window.removeEventListener('keyup', onKeyUp, true)
+    }
   }, [])
 
   /** 先頭に戻す。再生状態は維持する（再生中なら先頭から再生を続ける） */

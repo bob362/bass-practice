@@ -3,6 +3,7 @@ import {
   isPlayPauseShortcut,
   getPlayPauseKeyAction,
   isEditableOrActivatableTarget,
+  isPlainButtonTarget,
   rewindToStart,
 } from './playbackKeys'
 
@@ -104,15 +105,18 @@ describe('isPlayPauseShortcut', () => {
     const roleButton = append('div', { role: 'button' })
     const contentEditable = append('div', { contenteditable: 'true' })
 
-    for (const el of [input, textarea, select, button, anchor, roleButton, contentEditable]) {
+    for (const el of [input, textarea, select, anchor, contentEditable]) {
       expect(capture(el), `${el.tagName}`).toBe(false)
     }
+    // ボタン上ではスペースで再生/一時停止する
+    expect(capture(button)).toBe(true)
+    expect(capture(roleButton)).toBe(true)
   })
 
-  it('nested span inside button or contenteditable -> false', () => {
+  it('nested span: button -> true, contenteditable -> false', () => {
     const btn = append('button')
     const spanInBtn = append('span', {}, btn)
-    expect(capture(spanInBtn)).toBe(false)
+    expect(capture(spanInBtn)).toBe(true)
 
     const ce = append('div', { contenteditable: 'true' })
     const spanInCe = append('span', {}, ce)
@@ -212,5 +216,17 @@ describe('rewindToStart', () => {
     const api = { tickPosition: 42 }
     expect(rewindToStart(api, null)).toBe(true)
     expect(api.tickPosition).toBe(0)
+  })
+})
+
+describe('space on focused buttons', () => {
+  it('toggles when focus is on a plain button, ignores in input', () => {
+    const btn = document.createElement('button'); document.body.appendChild(btn)
+    const input = document.createElement('input'); document.body.appendChild(input)
+    const ev = (target: EventTarget) => ({ key: ' ', code: 'Space', repeat: false, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, target, defaultPrevented: false, isComposing: false })
+    expect(getPlayPauseKeyAction(ev(btn))).toBe('toggle')
+    expect(isPlainButtonTarget(btn)).toBe(true)
+    expect(getPlayPauseKeyAction(ev(input))).toBe('ignore')
+    expect(isPlainButtonTarget(input)).toBe(false)
   })
 })

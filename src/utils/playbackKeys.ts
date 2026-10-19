@@ -33,6 +33,14 @@ export function isEditableOrActivatableTarget(target: EventTarget | null): boole
   return false
 }
 
+/** プレーンなボタン（button / role=button。フォーム入力系は除く）上のキー入力か */
+export function isPlainButtonTarget(target: EventTarget | null): boolean {
+  if (!target || typeof (target as Element).closest !== 'function') return false
+  const element = target as Element
+  if (element.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return false
+  return element.closest('button, [role="button"]') !== null
+}
+
 export type PlayPauseKeyAction = 'toggle' | 'consume' | 'ignore'
 
 type PlayPauseKeyEvent = Pick<
@@ -54,7 +62,9 @@ export function getPlayPauseKeyAction(event: PlayPauseKeyEvent): PlayPauseKeyAct
   if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return 'ignore'
   if (event.defaultPrevented) return 'ignore'
   if (event.isComposing) return 'ignore'
-  if (isEditableOrActivatableTarget(event.target)) return 'ignore'
+  // ボタン（再生・最初に戻る等）にフォーカスがあってもスペースは再生/一時停止に使う。
+  // Enter による起動はブラウザ標準のまま残る。
+  if (!isPlainButtonTarget(event.target) && isEditableOrActivatableTarget(event.target)) return 'ignore'
   if (event.repeat) return 'consume'
   return 'toggle'
 }

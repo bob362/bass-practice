@@ -15,6 +15,15 @@ import SimplifyPanel from './SimplifyPanel'
 import type { SimplifyResult } from './SimplifyPanel'
 import { extractPlainScore } from '../utils/scoreModel'
 import type { PlainScore } from '../utils/scoreModel'
+import {
+  VIEW_MODES,
+  VIEW_MODE_LABELS,
+  applyViewModeToSettings,
+  loadViewMode,
+  prepareBassScoreForNotation,
+  saveViewMode,
+} from '../utils/viewMode'
+import type { ViewMode } from '../utils/viewMode'
 
 // alphaTabのグローバルインポート
 declare global {
@@ -102,8 +111,35 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
   /** 現在表示・再生している譜面（簡単アレンジ適用後を含む） */
   const [displayedScore, setDisplayedScore] = useState<PlainScore | null>(null)
   const [simplified, setSimplified] = useState<SimplifyResult | null>(null)
+  /** 譜面の表示モード（全曲共通で保存） */
+  const [viewMode, setViewMode] = useState<ViewMode>(() => loadViewMode())
 
   const timer = usePracticeTimer(songId, isPlaying)
+
+  // 表示モードの切り替え。曲の再読み込みや再生停止はせず、現在の譜面を描き直すだけにする
+  // （カーソル・ループ・動画同期・簡単アレンジはそのまま維持される）
+  const handleViewModeChange = useCallback((mode: ViewMode) => {
+    setViewMode(mode)
+    saveViewMode(mode)
+    const api = apiRef.current
+    if (!api) return
+    applyViewModeToSettings(api.settings, mode)
+    api.updateSettings()
+    api.render()
+  }, [])
+
+  // 矢印キーで表示モードを移動（radiogroupの標準的なキーボード操作）
+  const handleViewModeKeyDown = useCallback((e: React.KeyboardEvent<HTMLButtonElement>, mode: ViewMode) => {
+    const delta = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1
+      : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0
+    if (!delta) return
+    e.preventDefault()
+    const index = VIEW_MODES.indexOf(mode)
+    const next = VIEW_MODES[(index + delta + VIEW_MODES.length) % VIEW_MODES.length]
+    handleViewModeChange(next)
+    const group = e.currentTarget.parentElement
+    group?.querySelector<HTMLButtonElement>(`[data-view-mode="${next}"]`)?.focus()
+  }, [handleViewModeChange])
 
   // alphaTabのイベントハンドラは読み込み時に一度だけ登録されるため、最新値はrefで参照する
   const loopRef = useRef({ loopStart, loopEnd, isLooping })
@@ -116,6 +152,8 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
   sectionsRef.current = sections
   const activeSectionRef = useRef(activeSectionId)
   activeSectionRef.current = activeSectionId
+  const viewModeRef = useRef(viewMode)
+  viewModeRef.current = viewMode
   /** 現在のループ周回の開始tickと、その周回中の最低テンポ */
   const passRef = useRef<{ startTick: number; minTempo: number } | null>(null)
   const positionListeners = useRef(new Set<PositionListener>())
@@ -244,7 +282,7 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
         },
         display: {
           layoutMode: 'page',
-          staveProfile: 'tab',
+          // staveProfile / rhythmMode は表示モードに応じて applyViewModeToSettings で設定する
           resources: {
             staffLineColor: '#3a3a3a',
             barSeparatorColor: '#3a3a3a',
@@ -281,6 +319,8 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
 
       // イベントリスナーの設定
       api.scoreLoaded.on((score: any) => {
+        // 五線譜表示用にヘ音記号・オクターブ表記を整える（音高は変えない）
+        prepareBassScoreForNotation(score)
         const plain = extractPlainScore(score)
         setDisplayedScore(plain)
         if (!loadingSimplifiedRef.current) setOriginalScore(plain)
@@ -336,6 +376,10 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
       })
 
       apiRef.current = api
+
+      // 表示モード（TAB+リズム等）を読み込み前に反映する
+      applyViewModeToSettings(api.settings, viewModeRef.current)
+      api.updateSettings()
 
       // ファイルをロード
       loadSource(api, filePath)
@@ -663,6 +707,31 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
 
         <div className="control-group">
           <h3>表示</h3>
+          <div
+            className="view-mode-toggle"
+            role="radiogroup"
+            aria-label="譜面の表示"
+            data-testid="view-mode-toggle"
+          >
+            {VIEW_MODES.map(mode => (
+              <button
+                key={mode}
+                type="button"
+                role="radio"
+                aria-checked={viewMode === mode}
+                tabIndex={viewMode === mode ? 0 : -1}
+                data-view-mode={mode}
+                className={`button ${viewMode === mode ? 'button-primary' : 'button-secondary'} button-small`}
+                onClick={() => handleViewModeChange(mode)}
+                onKeyDown={e => handleViewModeKeyDown(e, mode)}
+              >
+                {VIEW_MODE_LABELS[mode]}
+              </button>
+            ))}
+          </div>
+          <div className="info-text">
+            TAB+リズム: TABに音符の長さ（棒・旗・連桁）と休符を表示
+          </div>
           {pdfData && (
             <button
               className={`button ${showPdf ? 'button-primary' : 'button-secondary'} button-small`}

@@ -1403,6 +1403,44 @@
     flex-wrap: wrap;
   }
 
+  /* 動画の操作ボタンは1行に1つずつ全幅で（ラベルが途中で折れたり切れたりしないように） */
+  .youtube-controls {
+    flex-direction: column;
+    flex-wrap: nowrap;
+  }
+
+  .youtube-controls .button {
+    flex: none;
+    width: 100%;
+    height: auto;
+    white-space: normal;
+    line-height: 1.3;
+  }
+
+  /* オフセットは入力欄とボタンを縦に並べる */
+  .youtube-offset-row .youtube-url-row > * {
+    flex: 1 1 100%;
+  }
+
+  .youtube-offset-row .youtube-url-row .button {
+    white-space: normal;
+    line-height: 1.3;
+  }
+
+  .youtube-volume-value {
+    flex: none;
+  }
+
+  /* シートのパネル自体にフォーカスしたとき（中に操作できる要素がないとき） */
+  .mobile-sheet-pane:focus {
+    outline: none;
+  }
+
+  .mobile-sheet-pane:focus-visible {
+    outline: 2px solid #4a9eff;
+    outline-offset: -2px;
+  }
+
   .youtube-url-row .text-input {
     flex: 1 1 12rem;
   }
@@ -1431,5 +1469,31 @@
 
   .dashboard-actions .button {
     flex: 1 1 auto;
+  }
+}
+
+/* ===== とても狭いスマホ（349.98px以下）：再生バーを詰める（タップ領域は44pxを保つ） ===== */
+@media (max-width: 349.98px) {
+  .mobile-transport {
+    gap: 0.25rem;
+    padding-left: calc(0.25rem + var(--m-safe-left));
+    padding-right: calc(0.25rem + var(--m-safe-right));
+  }
+
+  .mobile-transport-button {
+    padding: 0 0.25rem;
+  }
+
+  .mobile-transport-play {
+    min-width: 48px;
+  }
+
+  .mobile-tempo {
+    gap: 0.125rem;
+  }
+
+  .mobile-tempo-value {
+    min-width: 2.75rem;
+    font-size: 0.85rem;
   }
 }

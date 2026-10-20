@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import {
   ALL_FOLDERS, UNFILED, ConvertedSong, createFolder, deleteFolder, filterSongs, getAllTags, getFolders,
@@ -45,6 +45,7 @@ export default function SongLibrary({ songs, onOpenSong, onDeleteSong, onSongsUp
   // スマホではフォルダ一覧を折りたたむ（PCでは常に表示）
   const isMobile = useMediaQuery(MOBILE_MEDIA_QUERY)
   const [foldersOpen, setFoldersOpen] = useState(false)
+  const folderToggleRef = useRef<HTMLButtonElement>(null)
   const folderBodyHidden = isMobile && !foldersOpen
 
   const reloadFolders = () => setFolders(getFolders())
@@ -194,8 +195,11 @@ export default function SongLibrary({ songs, onOpenSong, onDeleteSong, onSongsUp
         className="folder-select-button"
         onClick={() => {
           setSelectedFolder(id)
-          // スマホでは選んだら一覧を閉じて曲を見せる
-          if (isMobile) setFoldersOpen(false)
+          // スマホでは選んだら一覧を閉じて曲を見せる（隠れたボタンにフォーカスを残さない）
+          if (isMobile) {
+            setFoldersOpen(false)
+            folderToggleRef.current?.focus()
+          }
         }}
         aria-pressed={selected}
         aria-current={selected ? 'true' : undefined}
@@ -221,6 +225,7 @@ export default function SongLibrary({ songs, onOpenSong, onDeleteSong, onSongsUp
         {isMobile && (
           <button
             type="button"
+            ref={folderToggleRef}
             className="folder-sidebar-toggle"
             data-testid="folder-sidebar-toggle"
             aria-expanded={foldersOpen}

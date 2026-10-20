@@ -80,6 +80,21 @@ const SHEET_ID = 'mobile-sheet'
 const sheetPaneId = (tab: SheetTab) => `mobile-sheet-pane-${tab}`
 const sheetTabId = (tab: SheetTab) => `mobile-sheet-tab-${tab}`
 
+const FOCUSABLE_SELECTOR = 'button, input, select, textarea, a[href], [tabindex]'
+
+/** 要素内でキーボードでフォーカスできる要素（DOM順） */
+function focusables(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(el => {
+    if (el.tabIndex < 0 || (el as HTMLButtonElement).disabled || el.closest('[hidden]')) return false
+    return !(el instanceof HTMLInputElement && (el.type === 'hidden' || el.type === 'file'))
+  })
+}
+const firstFocusable = (root: HTMLElement): HTMLElement | null => focusables(root)[0] ?? null
+const lastFocusable = (root: HTMLElement): HTMLElement | null => {
+  const list = focusables(root)
+  return list[list.length - 1] ?? null
+}
+
 /** 現在の画面幅に合った譜面の拡大率 */
 function currentScoreScale(): number {
   return scoreScaleForWidth(typeof window === 'undefined' ? 1024 : window.innerWidth)
@@ -168,8 +183,15 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [sheetOpen, closeSheet])
 
-  // 矢印キーでシートのタブを移動
+  // 矢印キーでシートのタブを移動。Tabで表示中のパネルの中へ（パネルはDOM上タブより前にあるため）
   const handleSheetTabKeyDown = useCallback((e: React.KeyboardEvent<HTMLButtonElement>, tab: SheetTab) => {
+    if (e.key === 'Tab' && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+      const pane = document.getElementById(sheetPaneId(tab))
+      if (!pane) return
+      e.preventDefault()
+      ;(firstFocusable(pane) ?? pane).focus()
+      return
+    }
     const delta = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0
     if (!delta) return
     e.preventDefault()
@@ -179,10 +201,42 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
     document.getElementById(sheetTabId(next))?.focus()
   }, [])
 
+  // パネルの先頭（またはパネル自体）でShift+Tabなら選択中のタブへ、
+  // 末尾（またはパネル自体）でTabなら閉じるボタンへ（タブへ戻るとループするため）
+  const handleSheetPaneKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Tab' || e.altKey || e.ctrlKey || e.metaKey) return
+    const pane = e.currentTarget
+    const target = e.target as HTMLElement
+    if (e.shiftKey) {
+      if (target !== pane && target !== firstFocusable(pane)) return
+      e.preventDefault()
+      document.getElementById(sheetTabId(sheetTabRef.current))?.focus()
+      return
+    }
+    if (target !== pane && target !== lastFocusable(pane)) return
+    if (!sheetCloseRef.current) return
+    e.preventDefault()
+    sheetCloseRef.current.focus()
+  }, [])
+
+  // 閉じるボタンでShift+Tabなら表示中のパネルの末尾へ戻す
+  const handleSheetCloseKeyDown = useCallback((e: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (e.key !== 'Tab' || !e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return
+    const pane = document.getElementById(sheetPaneId(sheetTabRef.current))
+    if (!pane) return
+    e.preventDefault()
+    ;(lastFocusable(pane) ?? pane).focus()
+  }, [])
+  const sheetCloseRef = useRef<HTMLButtonElement>(null)
+  const sheetTabRef = useRef(sheetTab)
+  sheetTabRef.current = sheetTab
+
   /** シート内の各パネル（PCでは影響しない属性） */
   const sheetPaneProps = (tab: SheetTab) => isMobile ? {
     id: sheetPaneId(tab),
     role: 'tabpanel',
+    tabIndex: -1,
+    onKeyDown: handleSheetPaneKeyDown,
     'aria-labelledby': sheetTabId(tab),
     'data-sheet-open': sheetOpen ? 'true' : 'false',
     'data-sheet-active': sheetTab === tab ? 'true' : 'false',
@@ -983,9 +1037,11 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
               </div>
               <button
                 type="button"
+                ref={sheetCloseRef}
                 className="mobile-sheet-close"
                 data-testid="mobile-sheet-close"
                 onClick={closeSheet}
+                onKeyDown={handleSheetCloseKeyDown}
                 aria-label="パネルを閉じる"
               >
                 ✕

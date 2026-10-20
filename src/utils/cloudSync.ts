@@ -23,6 +23,7 @@ async function request(path: string, method = 'GET', body?: unknown): Promise<{s
   let response: Response
   try { response = await fetcher(baseUrl + path, {method, credentials:'same-origin', headers:{'Content-Type':'application/json'}, ...(body === undefined ? {} : {body:JSON.stringify(body)})}) }
   catch { throw new SyncFailure('offline', offlineMessage) }
+  if (response.status === 404 && path === '/api/folders') return {status:404, data:null}
   if (response.status === 401) throw new SyncFailure('offline', 'ログインしていないため、この端末のみに保存しています', true)
   if (!response.headers.get('content-type')?.includes('application/json')) throw new SyncFailure('offline', offlineMessage)
   let data: any

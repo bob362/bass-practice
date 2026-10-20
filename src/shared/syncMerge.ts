@@ -35,14 +35,20 @@ export interface FolderEntry { id: string; name: string; updatedAt: number; dele
 export interface FoldersDoc { version: 1; folders: Record<string, FolderEntry> }
 export function emptyFoldersDoc(): FoldersDoc { return {version: 1, folders: {}} }
 export function isFoldersDoc(v: unknown): v is FoldersDoc {
-  const entry = (e: unknown): e is FolderEntry => plain(e) && typeof (e as FolderEntry).id === 'string' && typeof (e as FolderEntry).name === 'string' && (e as FolderEntry).name.length <= 100 && typeof (e as FolderEntry).updatedAt === 'number' && Number.isFinite((e as FolderEntry).updatedAt) && ((e as FolderEntry).deleted === undefined || typeof (e as FolderEntry).deleted === 'boolean')
+  const entry = (e: unknown): e is FolderEntry => plain(e) && typeof e.id === 'string' && typeof e.name === 'string' && e.name.length <= 100 && typeof e.updatedAt === 'number' && Number.isFinite(e.updatedAt) && (e.deleted === undefined || typeof e.deleted === 'boolean')
   return plain(v) && v.version === 1 && plain(v.folders) && Object.entries(v.folders).every(([k, e]) => entry(e) && e.id === k)
 }
 export function mergeFoldersDocs(a: FoldersDoc, b: FoldersDoc): FoldersDoc {
   const folders = {...a.folders}
   for (const [k, e] of Object.entries(b.folders)) {
     const cur = Object.prototype.hasOwnProperty.call(folders, k) ? folders[k] : undefined
-    if (!cur || e.updatedAt > cur.updatedAt || (e.updatedAt === cur.updatedAt && (e.deleted === true ? cur.deleted !== true : cur.deleted !== true && e.name > cur.name))) Object.defineProperty(folders, k, {value: {...e}, enumerable: true, writable: true, configurable: true})
+    const winsTie = cur && e.updatedAt === cur.updatedAt && (
+      e.deleted === true && cur.deleted !== true ||
+      (e.deleted === true) === (cur.deleted === true) && (
+        e.name > cur.name || e.name === cur.name && e.deleted === false && cur.deleted === undefined
+      )
+    )
+    if (!cur || e.updatedAt > cur.updatedAt || winsTie) Object.defineProperty(folders, k, {value: {...e}, enumerable: true, writable: true, configurable: true})
   }
   return {version: 1, folders}
 }

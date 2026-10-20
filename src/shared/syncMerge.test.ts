@@ -92,3 +92,17 @@ it('rejects invalid section and tombstone dates',()=>{
     expect(isProgressDoc({...emptyProgressDoc(),deletedSections:{s:date}})).toBe(false)
   }
 })
+
+it('breaks every folder timestamp tie commutatively, including tombstone names', () => {
+  const variants = [undefined, false, true].flatMap(deleted => ['a', 'z'].map(name => ({
+    version:1 as const,
+    folders:{f:{id:'f', name, updatedAt:1, ...(deleted === undefined ? {} : {deleted})}},
+  })))
+  for (const a of variants) for (const b of variants) {
+    const merged = mergeFoldersDocs(a,b)
+    expect(merged).toEqual(mergeFoldersDocs(b,a))
+    expect(mergeFoldersDocs(merged,merged)).toEqual(merged)
+    expect(merged.folders.f.deleted === true).toBe(a.folders.f.deleted === true || b.folders.f.deleted === true)
+    if ((a.folders.f.deleted === true) === (b.folders.f.deleted === true)) expect(merged.folders.f.name).toBe(a.folders.f.name > b.folders.f.name ? a.folders.f.name : b.folders.f.name)
+  }
+})

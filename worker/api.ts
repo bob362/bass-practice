@@ -6,7 +6,7 @@ class HttpError extends Error { constructor(public status:number, message:string
 async function body(req:Request,limit:number):Promise<unknown> {
   if (Number(req.headers.get('content-length')) > limit) throw new HttpError(413,'too large')
   const text = await req.text()
-  if (text.length > limit) throw new HttpError(413,'too large')
+  if (new TextEncoder().encode(text).byteLength > limit) throw new HttpError(413,'too large')
   try { return JSON.parse(text) } catch { throw new HttpError(400,'invalid JSON') }
 }
 export async function handleApi(req:Request,env:Env,identity:string):Promise<Response> {

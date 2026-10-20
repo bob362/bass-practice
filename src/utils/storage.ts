@@ -113,7 +113,7 @@ export function updateSong(id: string, updates: Partial<Omit<ConvertedSong, 'id'
   songs[index] = {
     ...songs[index],
     ...updates,
-    updatedAt: Date.now(),
+    updatedAt: Math.max(Date.now(), songs[index].updatedAt + 1),
   }
   
   writeSongs(songs, [id])
@@ -132,7 +132,7 @@ export function deleteSong(id: string): boolean {
   if (filtered.length === songs.length) return false
   
   writeSongs(filtered)
-  const deletedAt = Date.now()
+  const deletedAt = Math.max(Date.now(), songs.find(s => s.id === id)!.updatedAt + 1)
   setSongTombstones({ ...getSongTombstones(), [id]: deletedAt })
   notifyLocalChange({kind: 'song-deleted', id, deletedAt})
   return true
@@ -277,6 +277,7 @@ export function getFolders(): FolderEntry[] {
 export function createFolder(name: string): FolderEntry {
   const trimmed = name.trim()
   if (!trimmed) throw new Error('フォルダ名を入力してください')
+  if (trimmed.length > 100) throw new Error('フォルダ名は100文字以内で入力してください')
   const doc = getFoldersSyncDoc()
   if (Object.values(doc.folders).some(e => !e.deleted && e.name === trimmed)) throw new Error('同じ名前のフォルダがあります')
   const entry: FolderEntry = {id: `folder_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`, name: trimmed, updatedAt: Date.now()}
@@ -288,11 +289,12 @@ export function createFolder(name: string): FolderEntry {
 export function renameFolder(id: string, name: string): FolderEntry | null {
   const trimmed = name.trim()
   if (!trimmed) throw new Error('フォルダ名を入力してください')
+  if (trimmed.length > 100) throw new Error('フォルダ名は100文字以内で入力してください')
   const doc = getFoldersSyncDoc()
-  const entry = doc.folders[id]
+  const entry = Object.prototype.hasOwnProperty.call(doc.folders, id) ? doc.folders[id] : undefined
   if (!entry || entry.deleted) return null
   if (Object.values(doc.folders).some(e => e.id !== id && !e.deleted && e.name === trimmed)) throw new Error('同じ名前のフォルダがあります')
-  const updated: FolderEntry = {...entry, name: trimmed, updatedAt: Date.now()}
+  const updated: FolderEntry = {...entry, name: trimmed, updatedAt: Math.max(Date.now(), entry.updatedAt + 1)}
   applyFoldersSyncDoc({...doc, folders: {...doc.folders, [id]: updated}})
   for (const song of getAllSongs()) if (song.folderId === id) updateSong(song.id, {folderId: id})
   notifyLocalChange({kind: 'folders'})
@@ -301,14 +303,14 @@ export function renameFolder(id: string, name: string): FolderEntry | null {
 
 export function deleteFolder(id: string): boolean {
   const doc = getFoldersSyncDoc()
-  const entry = doc.folders[id]
+  const entry = Object.prototype.hasOwnProperty.call(doc.folders, id) ? doc.folders[id] : undefined
   if (!entry || entry.deleted) return false
-  applyFoldersSyncDoc({...doc, folders: {...doc.folders, [id]: {...entry, updatedAt: Date.now(), deleted: true}}})
+  applyFoldersSyncDoc({...doc, folders: {...doc.folders, [id]: {...entry, updatedAt: Math.max(Date.now(), entry.updatedAt + 1), deleted: true}}})
   const now = Date.now(), songs = getAllSongs(), affected = songs.filter(s => s.folderId === id)
   writeSongs(songs.map(s => {
     if (s.folderId !== id) return s
     const {folderId, ...rest} = s
-    return {...rest, updatedAt: now}
+    return {...rest, updatedAt: Math.max(now, s.updatedAt + 1)}
   }))
   for (const song of affected) notifyLocalChange({kind: 'song-saved', id: song.id})
   notifyLocalChange({kind: 'folders'})
@@ -318,7 +320,14 @@ export function deleteFolder(id: string): boolean {
 export function setSongFolder(songId: string, folderId: string | null): ConvertedSong | null {
   const song = getSongById(songId)
   if (!song) return null
-  if (folderId === null || folderId === UNFILED) { const {folderId, ...rest} = song; return updateSong(songId, rest) }
+  if (folderId === null || folderId === UNFILED) {
+    const {folderId: previousFolder, ...rest} = song
+    const updated = {...rest, updatedAt: Math.max(Date.now(), song.updatedAt + 1)}
+    writeSongs(getAllSongs().map(s => s.id === songId ? updated : s), [songId])
+    clearTombstones([songId])
+    notifyLocalChange({kind: 'song-saved', id: songId})
+    return updated
+  }
   return updateSong(songId, {folderId})
 }
 
@@ -343,7 +352,7 @@ export function getAllTags(songs: ConvertedSong[] = getAllSongs()): string[] {
 }
 
 export function songFolderId(song: ConvertedSong, folders: FolderEntry[] = getFolders()): string {
-  return song.folderId && folders.some(f => f.id === song.folderId) ? song.folderId : UNFILED
+  return song.folderId && folders.some(f => f.id === song.folderId && !f.deleted) ? song.folderId : UNFILED
 }
 
 export interface SongFilter { folderId: string; tags: string[]; query: string }

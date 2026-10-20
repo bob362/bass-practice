@@ -145,3 +145,26 @@ it('uses JSON keys, bounded metadata and unconditional initial writes',async()=>
   expect(await (await request('/api/songs/long')).json()).toEqual(song)
   expect((await request('/api/progress','PUT',{...emptyProgressDoc(),sections:[{id:'s',songId:'a',updatedAt:'invalid'}]})).status).toBe(400)
 })
+
+it('retains a competing folder deletion through conditional write retries', async () => {
+  const alive = {id:'f',name:'Folder',updatedAt:1}
+  await request('/api/folders','PUT',{version:1,folders:{f:alive}})
+  const originalPut = data.put.bind(data)
+  let compete = true
+  data.put = async (key,value,options) => {
+    if (compete) {
+      compete = false
+      await originalPut(key,JSON.stringify({version:1,folders:{f:{...alive,updatedAt:3,deleted:true}}}))
+    }
+    return originalPut(key,value,options)
+  }
+  const response = await request('/api/folders','PUT',{version:1,folders:{f:{...alive,name:'Rename',updatedAt:2}}})
+  expect(response.status).toBe(200)
+  expect(await response.json()).toEqual({version:1,folders:{f:{...alive,updatedAt:3,deleted:true}}})
+  data.failPuts = 3
+  expect((await request('/api/folders','PUT',{version:1,folders:{}})).status).toBe(409)
+})
+
+it('limits folders request bodies by UTF-8 bytes', async () => {
+  expect((await request('/api/folders','PUT','猫'.repeat(350000))).status).toBe(413)
+})

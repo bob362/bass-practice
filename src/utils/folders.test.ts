@@ -1,6 +1,7 @@
+import { emptyFoldersDoc, type FolderEntry } from '../shared/syncMerge'
 import { beforeEach, describe, expect, it } from 'vitest'
-import type { ConvertedSong, FolderEntry, LocalChange } from './storage'
-import { applyFoldersSyncDoc, createFolder, deleteFolder, emptyFoldersDoc, filterSongs, FOLDERS_STORAGE_KEY, getAllSongs, getAllTags, getFolders, getFoldersSyncDoc, LOCAL_CHANGE_EVENT, normalizeTags, putSongsFromRemote, renameFolder, setSongFolder, setSongTags, SONGS_STORAGE_KEY, songFolderId, UNFILED } from './storage'
+import type { ConvertedSong, LocalChange } from './storage'
+import { applyFoldersSyncDoc, createFolder, deleteFolder, filterSongs, FOLDERS_STORAGE_KEY, getAllSongs, getAllTags, getFolders, getFoldersSyncDoc, LOCAL_CHANGE_EVENT, normalizeTags, putSongsFromRemote, renameFolder, setSongFolder, setSongTags, SONGS_STORAGE_KEY, songFolderId, UNFILED } from './storage'
 
 const song = (id: string, extra: Partial<ConvertedSong> = {}): ConvertedSong => ({id, title: id, texData: 'tab', createdAt: 1, updatedAt: 1, ...extra})
 function capture() {
@@ -15,7 +16,7 @@ describe('folders', () => {
   it('creates, trims and sorts active folders', () => {
     const b = createFolder(' b '), a = createFolder('a')
     expect(getFolders().map(f => f.name)).toEqual(['a', 'b'])
-    expect(getFoldersSyncDoc().folders[a.id].name).toBe('甲')
+    expect(getFoldersSyncDoc().folders[a.id].name).toBe('a')
     expect(a.updatedAt).toBeGreaterThan(0)
     expect(b.id.startsWith('folder_')).toBe(true)
   })
@@ -123,4 +124,40 @@ describe('filterSongs', () => {
     expect(select({folderId: UNFILED, tags: ['rock'], query: ''})).toEqual([])
     expect(select({folderId: UNFILED, tags: [], query: ''})).toEqual(['bad', 'plain'])
   })
+})
+
+it('allows reuse of deleted folder names and enforces the sync name limit', () => {
+  const folder = createFolder('Reusable')
+  deleteFolder(folder.id)
+  const replacement = createFolder('Reusable')
+  expect(replacement.id).not.toBe(folder.id)
+  expect(renameFolder(replacement.id, 'Reusable')?.name).toBe('Reusable')
+  expect(() => createFolder('x'.repeat(101))).toThrow()
+  expect(() => renameFolder(replacement.id, 'x'.repeat(101))).toThrow()
+  expect(getFoldersSyncDoc().folders[folder.id].deleted).toBe(true)
+})
+
+it('removes the stored folderId when explicitly unfiling a song', () => {
+  const folder = createFolder('Folder')
+  putSongsFromRemote([song('s')])
+  setSongFolder('s', folder.id)
+  const before = getAllSongs()[0].updatedAt
+  expect(setSongFolder('s', UNFILED)).not.toHaveProperty('folderId')
+  expect(getAllSongs()[0].updatedAt).toBeGreaterThan(before)
+  expect(JSON.parse(localStorage.getItem(SONGS_STORAGE_KEY)!)[0]).not.toHaveProperty('folderId')
+  setSongFolder('s', folder.id)
+  expect(setSongFolder('s', null)).not.toHaveProperty('folderId')
+})
+
+it('strictly increases folder and affected song timestamps even ahead of the clock', () => {
+  const folder = createFolder('Original')
+  putSongsFromRemote([song('s', {folderId:folder.id, updatedAt:Date.now() + 10000})])
+  const before = getAllSongs()[0].updatedAt
+  const renamed = renameFolder(folder.id, 'Renamed')!
+  expect(renamed.updatedAt).toBeGreaterThan(folder.updatedAt)
+  expect(getAllSongs()[0].updatedAt).toBeGreaterThan(before)
+  const afterRename = getAllSongs()[0].updatedAt
+  deleteFolder(folder.id)
+  expect(getFoldersSyncDoc().folders[folder.id].updatedAt).toBeGreaterThan(renamed.updatedAt)
+  expect(getAllSongs()[0].updatedAt).toBeGreaterThan(afterRename)
 })

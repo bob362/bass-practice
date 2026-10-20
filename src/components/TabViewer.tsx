@@ -26,6 +26,9 @@ import {
 } from '../utils/viewMode'
 import type { ViewMode } from '../utils/viewMode'
 import { enhanceTabRhythmDots } from './tabRhythmDots'
+import { useMediaQuery } from '../hooks/useMediaQuery'
+import { MOBILE_MEDIA_QUERY, TEMPO_MAX, TEMPO_MIN, TEMPO_STEP, scoreScaleForWidth, stepTempo } from '../utils/mobile'
+import { installAudioUnlock, preferPlaybackAudioSession } from '../utils/audioUnlock'
 
 // alphaTabのグローバルインポート
 declare global {
@@ -66,6 +69,21 @@ function tickToBar(api: any, tick: number): number | null {
 
 /** CDNから読み込むalphaTabのバージョン（package.jsonと揃える。@latestは使わない） */
 const ALPHATAB_VERSION = '1.8.4'
+
+/** スマホ表示のボトムシートのタブ */
+type SheetTab = 'video' | 'settings'
+const SHEET_TABS: { key: SheetTab; label: string }[] = [
+  { key: 'video', label: '動画・同期' },
+  { key: 'settings', label: '設定' },
+]
+const SHEET_ID = 'mobile-sheet'
+const sheetPaneId = (tab: SheetTab) => `mobile-sheet-pane-${tab}`
+const sheetTabId = (tab: SheetTab) => `mobile-sheet-tab-${tab}`
+
+/** 現在の画面幅に合った譜面の拡大率 */
+function currentScoreScale(): number {
+  return scoreScaleForWidth(typeof window === 'undefined' ? 1024 : window.innerWidth)
+}
 
 /** 曲データ（URL・alphaTex文字列・バイナリ）をalphaTabに読み込む */
 function loadSource(api: any, source: string | ArrayBuffer) {
@@ -119,6 +137,62 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
   const [viewMode, setViewMode] = useState<ViewMode>(() => loadViewMode())
 
   const timer = usePracticeTimer(songId, isPlaying)
+
+  // スマホ表示（下部の再生バーとボトムシート）
+  const isMobile = useMediaQuery(MOBILE_MEDIA_QUERY)
+  const [sheetOpen, setSheetOpen] = useState(false)
+  const [sheetTab, setSheetTab] = useState<SheetTab>('video')
+  const sheetToggleRef = useRef<HTMLButtonElement>(null)
+  const sheetTabsRef = useRef<HTMLDivElement>(null)
+
+  // PC表示に戻ったらシートは閉じておく
+  useEffect(() => {
+    if (!isMobile) setSheetOpen(false)
+  }, [isMobile])
+
+  const closeSheet = useCallback(() => {
+    setSheetOpen(false)
+    sheetToggleRef.current?.focus()
+  }, [])
+
+  // 開いたら選択中のタブへフォーカス、Escapeで閉じる
+  useEffect(() => {
+    if (!sheetOpen) return
+    sheetTabsRef.current?.querySelector<HTMLButtonElement>('[aria-selected="true"]')?.focus()
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.isComposing) return
+      e.preventDefault()
+      closeSheet()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [sheetOpen, closeSheet])
+
+  // 矢印キーでシートのタブを移動
+  const handleSheetTabKeyDown = useCallback((e: React.KeyboardEvent<HTMLButtonElement>, tab: SheetTab) => {
+    const delta = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0
+    if (!delta) return
+    e.preventDefault()
+    const index = SHEET_TABS.findIndex(t => t.key === tab)
+    const next = SHEET_TABS[(index + delta + SHEET_TABS.length) % SHEET_TABS.length].key
+    setSheetTab(next)
+    document.getElementById(sheetTabId(next))?.focus()
+  }, [])
+
+  /** シート内の各パネル（PCでは影響しない属性） */
+  const sheetPaneProps = (tab: SheetTab) => isMobile ? {
+    id: sheetPaneId(tab),
+    role: 'tabpanel',
+    'aria-labelledby': sheetTabId(tab),
+    'data-sheet-open': sheetOpen ? 'true' : 'false',
+    'data-sheet-active': sheetTab === tab ? 'true' : 'false',
+  } : {}
+
+  // iOSで最初のタップ時に音声を有効化する
+  useEffect(() => {
+    preferPlaybackAudioSession()
+    return installAudioUnlock(() => apiRef.current)
+  }, [])
 
   // 表示モードの切り替え。曲の再読み込みや再生停止はせず、現在の譜面を描き直すだけにする
   // （カーソル・ループ・動画同期・簡単アレンジはそのまま維持される）
@@ -306,7 +380,8 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
         display: {
           layoutMode: 'page',
           // staveProfile / rhythmMode は表示モードに応じて applyViewModeToSettings で設定する
-          scale: 1.1,
+          // 画面幅に合わせる（PCは DESKTOP_SCORE_SCALE）
+          scale: currentScoreScale(),
           resources: {
             staffLineColor: '#3a3a3a',
             barSeparatorColor: '#3a3a3a',
@@ -432,6 +507,33 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
       }
     }
   }, [filePath])
+
+  // 画面幅（スマホ⇔PCの切り替えや回転）が変わったら譜面の拡大率を合わせる
+  useEffect(() => {
+    let timeout = 0
+    const apply = () => {
+      timeout = 0
+      const api = apiRef.current
+      if (!api?.settings?.display) return
+      const scale = currentScoreScale()
+      if (api.settings.display.scale === scale) return
+      api.settings.display.scale = scale
+      api.updateSettings()
+      if (api.score) api.render()
+    }
+    apply()
+    const onResize = () => {
+      if (timeout) window.clearTimeout(timeout)
+      timeout = window.setTimeout(apply, 150)
+    }
+    window.addEventListener('resize', onResize)
+    window.addEventListener('orientationchange', onResize)
+    return () => {
+      if (timeout) window.clearTimeout(timeout)
+      window.removeEventListener('resize', onResize)
+      window.removeEventListener('orientationchange', onResize)
+    }
+  }, [isMobile])
 
   // テンポ変更の処理
   useEffect(() => {
@@ -601,15 +703,7 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
     <>
       <div className="tab-container" style={{ display: 'flex', flexDirection: 'row', flex: 1, overflow: 'hidden', minHeight: 0 }}>
         {showPdf && pdfData && (
-          <div style={{
-            width: '400px',
-            flex: '0 0 400px',
-            alignSelf: 'stretch',
-            background: '#2a2a2a',
-            borderRight: '1px solid #3a3a3a',
-            padding: '1rem',
-            overflow: 'auto',
-          }}>
+          <div className="tab-pdf-pane">
             <h3 style={{ color: '#aaa', fontSize: '0.9rem', marginBottom: '1rem' }}>
               元のPDF
             </h3>
@@ -634,19 +728,22 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
             </div>
           )}
         </div>
-        <YouTubePanel
-          songId={songId}
-          isTabPlaying={isPlaying}
-          tempoPercent={tempo}
-          getTabSec={getTabSec}
-          subscribePosition={subscribePosition}
-          playTab={playTab}
-          pauseTab={pauseTab}
-          seekTab={seekTab}
-          onTabMutedChange={setTabMuted}
-        />
+        {/* PCでは display: contents で従来どおり。スマホではボトムシートの「動画・同期」タブになる（常にマウントしたまま） */}
+        <div className="youtube-sheet-pane mobile-sheet-pane" {...sheetPaneProps('video')}>
+          <YouTubePanel
+            songId={songId}
+            isTabPlaying={isPlaying}
+            tempoPercent={tempo}
+            getTabSec={getTabSec}
+            subscribePosition={subscribePosition}
+            playTab={playTab}
+            pauseTab={pauseTab}
+            seekTab={seekTab}
+            onTabMutedChange={setTabMuted}
+          />
+        </div>
       </div>
-      <div className="controls-panel">
+      <div className="controls-panel mobile-sheet-pane" {...sheetPaneProps('settings')}>
         <div className="control-group">
           <h3>再生</h3>
           <button
@@ -846,6 +943,118 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
           </div>
         </div>
       </div>
+      {isMobile && (
+        <>
+          <section
+            id={SHEET_ID}
+            className="mobile-sheet"
+            data-testid="mobile-sheet"
+            data-sheet-open={sheetOpen ? 'true' : 'false'}
+            aria-label="練習パネル"
+          >
+            <button
+              type="button"
+              className="mobile-sheet-handle"
+              onClick={closeSheet}
+              tabIndex={-1}
+              aria-hidden="true"
+            >
+              <span className="mobile-sheet-handle-bar" />
+            </button>
+            <div className="mobile-sheet-header">
+              <div className="mobile-sheet-tabs" role="tablist" aria-label="パネルの切り替え" ref={sheetTabsRef}>
+                {SHEET_TABS.map(t => (
+                  <button
+                    key={t.key}
+                    type="button"
+                    role="tab"
+                    id={sheetTabId(t.key)}
+                    aria-selected={sheetTab === t.key}
+                    aria-controls={sheetPaneId(t.key)}
+                    tabIndex={sheetTab === t.key ? 0 : -1}
+                    className={`mobile-sheet-tab ${sheetTab === t.key ? 'active' : ''}`}
+                    data-testid={`mobile-sheet-tab-${t.key}`}
+                    onClick={() => setSheetTab(t.key)}
+                    onKeyDown={e => handleSheetTabKeyDown(e, t.key)}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="mobile-sheet-close"
+                data-testid="mobile-sheet-close"
+                onClick={closeSheet}
+                aria-label="パネルを閉じる"
+              >
+                ✕
+              </button>
+            </div>
+          </section>
+          <div className="mobile-transport" data-testid="mobile-transport" role="group" aria-label="再生コントロール">
+            <button
+              type="button"
+              className="mobile-transport-button"
+              onClick={handleRewind}
+              disabled={!isReady}
+              aria-label="最初に戻る"
+              title="最初に戻る"
+            >
+              ⏮
+            </button>
+            <button
+              type="button"
+              className="mobile-transport-button mobile-transport-play"
+              data-testid="mobile-play-toggle"
+              onClick={handlePlayPause}
+              disabled={!isReady}
+              aria-label={isPlaying ? '一時停止' : '再生'}
+              title={isPlaying ? '一時停止' : '再生'}
+            >
+              {isPlaying ? '⏸' : '▶'}
+            </button>
+            <div className="mobile-tempo" role="group" aria-label="速度">
+              <button
+                type="button"
+                className="mobile-transport-button"
+                data-testid="mobile-tempo-down"
+                onClick={() => setTempo(t => stepTempo(t, -TEMPO_STEP))}
+                disabled={!isReady || tempo <= TEMPO_MIN}
+                aria-label="速度を下げる"
+              >
+                −
+              </button>
+              <output className="mobile-tempo-value" aria-live="polite" aria-label={`速度 ${tempo}%`}>
+                {tempo}%
+              </output>
+              <button
+                type="button"
+                className="mobile-transport-button"
+                data-testid="mobile-tempo-up"
+                onClick={() => setTempo(t => stepTempo(t, TEMPO_STEP))}
+                disabled={!isReady || tempo >= TEMPO_MAX}
+                aria-label="速度を上げる"
+              >
+                +
+              </button>
+            </div>
+            <button
+              ref={sheetToggleRef}
+              type="button"
+              className={`mobile-transport-button mobile-sheet-toggle ${sheetOpen ? 'active' : ''}`}
+              data-testid="mobile-sheet-toggle"
+              onClick={() => setSheetOpen(open => !open)}
+              aria-expanded={sheetOpen}
+              aria-controls={SHEET_ID}
+              aria-label={sheetOpen ? '練習パネルを閉じる' : '練習パネル（動画・設定）を開く'}
+              title="動画・設定"
+            >
+              ☰
+            </button>
+          </div>
+        </>
+      )}
     </>
   )
 }

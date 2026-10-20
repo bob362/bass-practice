@@ -16,3 +16,20 @@ body {
   width: 100%;
   min-height: 100vh;
 }
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* タッチ操作：ダブルタップ拡大の待ち時間をなくし、タップ時のハイライトを消す */
+button,
+.button,
+select,
+label,
+input,
+[role="button"],
+[role="tab"] {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}

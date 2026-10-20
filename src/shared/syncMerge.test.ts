@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
-import { emptyMediaDoc, emptyProgressDoc, ensureUpdatedAt, isMediaDoc, isNewer, isProgressDoc, mergeMediaDocs, mergeProgressDocs, normalizeProgressDoc, planSongSync, sectionKey, summarizeSong } from './syncMerge'
+import { emptyFoldersDoc, emptyMediaDoc, emptyProgressDoc, ensureUpdatedAt, isFoldersDoc, isMediaDoc, isNewer, isProgressDoc, mergeFoldersDocs, mergeMediaDocs, mergeProgressDocs, normalizeProgressDoc, planSongSync, sectionKey, summarizeSong } from './syncMerge'
 describe('songs',()=>{
   it('summarizes only supported defined fields',()=>{
     expect(summarizeSong({id:'a',updatedAt:1,deleted:false,title:'t',artist:'a',createdAt:0,extra:4})).toEqual({id:'a',updatedAt:1,title:'t',artist:'a',createdAt:0})
@@ -29,6 +29,32 @@ describe('media',()=>{
     expect(a.entries.a.settings).toBe(1)
     expect(isMediaDoc(a)).toBe(true)
     for (const v of [null,{version:1,entries:[]},{version:1,entries:{a:{updatedAt:NaN,settings:1}}},{version:1,entries:{a:{updatedAt:1}}}]) expect(isMediaDoc(v)).toBe(false)
+  })
+})
+describe('folders',()=>{
+  it('merges commutatively with deleted winning equal timestamps and larger names breaking ties',()=>{
+    const a = {version:1 as const,folders:{f:{id:'f',name:'x',updatedAt:5},g:{id:'g',name:'a',updatedAt:3}}}, b = {version:1 as const,folders:{f:{id:'f',name:'renamed',updatedAt:3},g:{id:'g',name:'b',updatedAt:3},h:{id:'h',name:'new',updatedAt:9}}}
+    expect(mergeFoldersDocs(a,b)).toEqual(mergeFoldersDocs(b,a))
+    expect(mergeFoldersDocs(a,b).folders.f).toEqual({id:'f',name:'x',updatedAt:5})
+    expect(mergeFoldersDocs(a,b).folders.g).toEqual({id:'g',name:'b',updatedAt:3})
+    expect(mergeFoldersDocs(b,a).folders.f).toEqual({id:'f',name:'x',updatedAt:5})
+    expect(mergeFoldersDocs(b,a).folders.g).toEqual({id:'g',name:'b',updatedAt:3})
+    expect(mergeFoldersDocs(emptyFoldersDoc(),a).folders.f).toEqual(a.folders.f)
+    expect(mergeFoldersDocs(a,b).folders.h).toEqual({id:'h',name:'new',updatedAt:9})
+    expect(mergeFoldersDocs(a,a).folders.f).toEqual(a.folders.f)
+  })
+  it('keeps tombstones so older renames never resurrect deleted folders',()=>{
+    const alive = {version:1 as const,folders:{f:{id:'f',name:'x',updatedAt:5}}}
+    const tomb = {version:1 as const,folders:{f:{id:'f',name:'x',updatedAt:6,deleted:true}}}
+    expect(mergeFoldersDocs(alive,tomb).folders.f.deleted).toBe(true)
+    expect(mergeFoldersDocs(alive,tomb)).toEqual(mergeFoldersDocs(tomb,alive))
+    expect(mergeFoldersDocs(tomb,{version:1 as const,folders:{f:{id:'f',name:'later rename',updatedAt:6}}}).folders.f.deleted).toBe(true)
+    expect(mergeFoldersDocs(tomb,{version:1 as const,folders:{f:{id:'f',name:'older rename',updatedAt:4}}}).folders.f.deleted).toBe(true)
+  })
+  it('validates document shape',()=>{
+    expect(isFoldersDoc(emptyFoldersDoc())).toBe(true)
+    expect(isFoldersDoc({version:1,folders:{f:{id:'f',name:'名前'.repeat(20),updatedAt:1,deleted:true}}})).toBe(true)
+    for (const v of [null,{version:1,folders:[]},{version:2,folders:{}},{version:1},{version:1,folders:{f:{id:'other',name:'x',updatedAt:1}}},{version:1,folders:{f:{id:'f',name:'x'.repeat(101),updatedAt:1}}},{version:1,folders:{f:{id:'f',name:'x',updatedAt:'1'}}},{version:1,folders:{f:{id:'f',name:'x',updatedAt:NaN}}},{version:1,folders:{f:{id:'f',name:'x',updatedAt:1,deleted:'yes'}}},{version:1,folders:{f:{name:'x',updatedAt:1}}}]) expect(isFoldersDoc(v)).toBe(false)
   })
 })
 describe('progress',()=>{

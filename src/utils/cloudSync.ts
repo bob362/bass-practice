@@ -1,5 +1,5 @@
-import { ensureUpdatedAt, isMediaDoc, isProgressDoc, mergeMediaDocs, mergeProgressDocs, normalizeProgressDoc, planSongSync, type SongSummary } from '../shared/syncMerge'
-import { applyMediaSyncDoc, getAllSongs, getMediaSyncDoc, getSongById, getSongTombstones, LOCAL_CHANGE_EVENT, putSongsFromRemote, removeSongsFromRemote, type ConvertedSong, type LocalChange } from './storage'
+import { ensureUpdatedAt, isFoldersDoc, isMediaDoc, isProgressDoc, mergeFoldersDocs, mergeMediaDocs, mergeProgressDocs, normalizeProgressDoc, planSongSync, type SongSummary } from '../shared/syncMerge'
+import { applyFoldersSyncDoc, applyMediaSyncDoc, getAllSongs, getFoldersSyncDoc, getMediaSyncDoc, getSongById, getSongTombstones, LOCAL_CHANGE_EVENT, putSongsFromRemote, removeSongsFromRemote, type ConvertedSong, type LocalChange } from './storage'
 import { applyProgressSyncDoc, getProgressSyncDoc } from './progress'
 
 export type SyncState = 'idle' | 'syncing' | 'synced' | 'offline' | 'error'
@@ -57,8 +57,15 @@ async function flush() {
     if (queue[0] === op) { queue.shift(); persist() }
   }
 }
-async function documents(kind: 'media' | 'progress') {
-  if (kind === 'media') {
+async function documents(kind: 'media' | 'progress' | 'folders') {
+  if (kind === 'folders') {
+    const result = await request('/api/folders', 'PUT', getFoldersSyncDoc())
+    if (result.status === 404) return
+    if (result.status !== 200 || !isFoldersDoc(result.data)) throw new SyncFailure('error', 'エラー: Invalid folders document')
+    const current = getFoldersSyncDoc(), merged = mergeFoldersDocs(current, result.data)
+    applyFoldersSyncDoc(merged)
+    if (JSON.stringify(current) !== JSON.stringify(merged)) changed()
+  } else if (kind === 'media') {
     const before = getMediaSyncDoc(), result = await request('/api/settings', 'PUT', before)
     if (result.status !== 200 || !isMediaDoc(result.data)) throw new SyncFailure('error', 'エラー: Invalid media document')
     const current = getMediaSyncDoc(), merged = mergeMediaDocs(current, result.data)
@@ -102,7 +109,7 @@ export function syncNow(): Promise<void> {
       })
       if (deletions.length) { removeSongsFromRemote(deletions); changed() }
       for (const id of plan.pushDelete) await send({op:'delete', id, updatedAt:getSongTombstones()[id]})
-      await documents('media'); await documents('progress')
+      await documents('folders'); await documents('media'); await documents('progress')
       await flush()
       delay = 2000
       if (retry) clearTimeout(retry); retry = undefined
@@ -117,7 +124,7 @@ function localChange(event: Event) {
     queue = queue.filter(op => op.id !== c.id)
     queue.push(c.kind === 'song-saved' ? {op:'put', id:c.id} : {op:'delete', id:c.id, updatedAt:c.deletedAt})
     persist(); if (running) rerun = true; else void syncNow()
-  } else if (c.kind === 'all') { if (running) rerun = true; else void syncNow() }
+  } else if (c.kind === 'all' || c.kind === 'folders') { if (running) rerun = true; else void syncNow() }
   else if (c.kind === 'media') { clearTimeout(mediaTimer); mediaTimer = setTimeout(() => { if (running) rerun = true; else void syncNow() }, 1500) }
   else { clearTimeout(progressTimer); progressTimer = setTimeout(() => { if (running) rerun = true; else void syncNow() }, 1500) }
 }

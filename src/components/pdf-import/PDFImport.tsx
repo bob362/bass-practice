@@ -9,6 +9,7 @@ import {
   GUITAR_PRO_ACCEPT, MAX_GUITAR_PRO_BYTES, bytesToBase64, guitarProFormatFromName, looksLikeGuitarPro, titleFromFileName,
 } from '../../utils/guitarPro'
 import { SONGS_CHANGED_EVENT } from '../../utils/cloudSync'
+import SongLibrary from './SongLibrary'
 import './PDFImport.css'
 
 configurePdfjsWorker()
@@ -246,38 +247,12 @@ export default function PDFImport({ onSongSelected }: PDFImportProps) {
       {stage === 'saved-list' && (
         <>
           <h2>保存済みの曲</h2>
-          {savedSongs.length === 0 ? (
-            <div className="info-box">
-              まだ曲が保存されていません。下のボタンからPDFをインポートしてください。
-            </div>
-          ) : (
-            <div className="saved-songs-list">
-              {savedSongs.map(song => (
-                <div
-                  key={song.id}
-                  className="song-item"
-                  onClick={() => handleSongSelect(song)}
-                >
-                  <div className="song-info">
-                    <div className="song-title">{song.title}</div>
-                    <div className="song-meta">
-                      {song.artist && `${song.artist} • `}
-                      {new Date(song.updatedAt).toLocaleDateString('ja-JP')}
-                    </div>
-                  </div>
-                  <div className="song-actions">
-                    <button
-                      className="icon-button delete"
-                      onClick={(e) => handleDeleteSong(song.id, e)}
-                      title="削除"
-                    >
-                      🗑️
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+          <SongLibrary
+            songs={savedSongs}
+            onOpenSong={handleSongSelect}
+            onDeleteSong={handleDeleteSong}
+            onSongsUpdated={loadSavedSongs}
+          />
           <button
             className="button button-primary"
             onClick={() => setStage('upload')}

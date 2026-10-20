@@ -1,5 +1,5 @@
 import type { Env } from './index'
-import { emptyMediaDoc, emptyProgressDoc, isMediaDoc, isProgressDoc, mergeMediaDocs, mergeProgressDocs, normalizeProgressDoc, summarizeSong } from '../src/shared/syncMerge'
+import { emptyFoldersDoc, emptyMediaDoc, emptyProgressDoc, isFoldersDoc, isMediaDoc, isProgressDoc, mergeFoldersDocs, mergeMediaDocs, mergeProgressDocs, normalizeProgressDoc, summarizeSong } from '../src/shared/syncMerge'
 import type { SongRecord } from '../src/shared/syncMerge'
 export function json(value:unknown,status=200):Response { return new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}}) }
 class HttpError extends Error { constructor(public status:number, message:string) { super(message) } }
@@ -67,6 +67,20 @@ export async function handleApi(req:Request,env:Env,identity:string):Promise<Res
       for (let attempt=0;attempt<3;attempt++) {
         const obj = await env.DATA.get(key)
         const merged = media ? mergeMediaDocs(obj ? await obj.json() : emptyMediaDoc(),incoming as ReturnType<typeof emptyMediaDoc>) : mergeProgressDocs(obj ? normalizeProgressDoc(await obj.json()) : emptyProgressDoc(),normalizeProgressDoc(incoming))
+        const result = await env.DATA.put(key,JSON.stringify(merged),obj ? {onlyIf:{etagMatches:obj.etag}} : undefined)
+        if (result) return json(merged)
+      }
+      return json({error:'busy'},409)
+    }
+    if (path === '/api/folders') {
+      if (method !== 'GET' && method !== 'PUT') return json({error:'method not allowed'},405)
+      const key = `${prefix}folders.json`
+      if (method === 'GET') { const obj = await env.DATA.get(key); return json(obj ? await obj.json() : emptyFoldersDoc()) }
+      const incoming = await body(req,1024*1024)
+      if (!isFoldersDoc(incoming)) throw new HttpError(400,'invalid document')
+      for (let attempt=0;attempt<3;attempt++) {
+        const obj = await env.DATA.get(key)
+        const merged = mergeFoldersDocs(obj ? await obj.json() : emptyFoldersDoc(),incoming)
         const result = await env.DATA.put(key,JSON.stringify(merged),obj ? {onlyIf:{etagMatches:obj.etag}} : undefined)
         if (result) return json(merged)
       }

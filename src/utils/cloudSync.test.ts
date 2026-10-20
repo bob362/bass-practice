@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { emptyMediaDoc, emptyProgressDoc, mergeMediaDocs, mergeProgressDocs, summarizeSong, type SongRecord } from '../shared/syncMerge'
+import { emptyFoldersDoc, emptyMediaDoc, emptyProgressDoc, mergeFoldersDocs, mergeMediaDocs, mergeProgressDocs, summarizeSong, type SongRecord } from '../shared/syncMerge'
 import { _resetCloudSyncForTests, getSyncStatus, SONGS_CHANGED_EVENT, startCloudSync, syncNow } from './cloudSync'
-import { deleteSong, getAllSongs, getMediaSyncDoc, getSongById, getSongTombstones, notifyLocalChange, putSongsFromRemote, saveSong, saveSongMediaSettings, SONGS_STORAGE_KEY, updateSong } from './storage'
+import { createFolder, deleteFolder, getAllSongs, getFolders, getFoldersSyncDoc, getMediaSyncDoc, getSongById, getSongTombstones, notifyLocalChange, putSongsFromRemote, saveSong, saveSongMediaSettings, setSongFolder, setSongTags, SONGS_STORAGE_KEY, UNFILED, updateSong } from './storage'
 import { addSession, getProgressSyncDoc } from './progress'
 
 function server() {
   const songs = new Map<string, SongRecord>()
-  let media = emptyMediaDoc(), progress = emptyProgressDoc()
+  let media = emptyMediaDoc(), progress = emptyProgressDoc(), folders = emptyFoldersDoc()
   const calls: string[] = []
   const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), 'https://test.local'), method = init?.method ?? 'GET'
@@ -24,9 +24,10 @@ function server() {
     }
     if (url.pathname === '/api/settings') { media = mergeMediaDocs(media, body()); return json(media) }
     if (url.pathname === '/api/progress') { progress = mergeProgressDocs(progress, body()); return json(progress) }
+    if (url.pathname === '/api/folders') { folders = mergeFoldersDocs(folders, body()); return json(folders) }
     return json({}, 404)
   }) as unknown as typeof globalThis.fetch
-  return {songs, fetch, calls, get media() {return media}, set media(v) {media=v}, get progress() {return progress}, set progress(v) {progress=v}}
+  return {songs, fetch, calls, get media() {return media}, set media(v) {media=v}, get progress() {return progress}, set progress(v) {progress=v}, get folders() {return folders}, set folders(v) {folders=v}}
 }
 const song = (id: string, updatedAt = 10) => ({id, title:id, createdAt:1, updatedAt, texData:'tab'})
 beforeEach(() => { _resetCloudSyncForTests(); localStorage.clear() })

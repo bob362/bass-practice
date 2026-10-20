@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { addSession, streakDays, totalPracticeSec, exportAllJSON, importAllJSON, upsertSection, updateSectionTempo, listSections, songProgress } from './progress'
-import { getAllSongs, getSongMediaSettings, saveSong, saveSongMediaSettings } from './storage'
+import { createFolder, deleteFolder, getAllSongs, getFolders, getFoldersSyncDoc, getSongMediaSettings, LOCAL_CHANGE_EVENT, saveSong, saveSongMediaSettings, setSongFolder, songFolderId } from './storage'
 
 beforeEach(() => localStorage.clear())
 const session = (day: number, id = `session-${day}`) => addSession({ id, songId: 'song', start: new Date(2026, 9, day, 12).toISOString(), durationSec: 60 })
@@ -43,6 +43,67 @@ describe('backups and progress', () => {
     importAllJSON(JSON.stringify({ version: 1, songs: [], media: {}, progress: { version: 1, sessions: [], sections: [] } }), 'replace')
     expect(getAllSongs()).toEqual([])
     expect(totalPracticeSec()).toBe(0)
+  })
+  it('exports the folders sync document including tombstones', () => {
+    createFolder('Practice')
+    const deleted = createFolder('Deleted')
+    deleteFolder(deleted.id)
+    expect(JSON.parse(exportAllJSON()).folders).toEqual(getFoldersSyncDoc())
+    expect(JSON.parse(exportAllJSON()).folders.folders[deleted.id].deleted).toBe(true)
+  })
+  it.each(['merge', 'replace'] as const)('restores folders and song assignments into empty storage in %s mode', mode => {
+    const folder = createFolder('Practice')
+    const song = saveSong({ title: 'Bass', texData: 'tab' })
+    setSongFolder(song.id, folder.id)
+    const backup = exportAllJSON()
+    localStorage.clear()
+    const changes: unknown[] = []
+    const listener = (event: Event) => changes.push((event as CustomEvent).detail)
+    window.addEventListener(LOCAL_CHANGE_EVENT, listener)
+    try {
+      importAllJSON(backup, mode)
+    } finally {
+      window.removeEventListener(LOCAL_CHANGE_EVENT, listener)
+    }
+    expect(getFolders().map(f => f.name)).toEqual(['Practice'])
+    expect(getAllSongs()[0].folderId).toBe(folder.id)
+    expect(songFolderId(getAllSongs()[0])).toBe(folder.id)
+    expect(changes).toContainEqual({kind: 'folders'})
+  })
+  it.each(['merge', 'replace'] as const)('merges folders while preserving local and imported tombstones in %s mode', mode => {
+    const folder = createFolder('Practice')
+    const deleted = createFolder('Deleted')
+    deleteFolder(deleted.id)
+    const backup = exportAllJSON()
+    deleteFolder(folder.id)
+    const local = createFolder('Local')
+    importAllJSON(backup, mode)
+    expect(getFolders().map(f => f.name)).toEqual(['Local'])
+    expect(getFoldersSyncDoc().folders[folder.id].deleted).toBe(true)
+    expect(getFoldersSyncDoc().folders[deleted.id].deleted).toBe(true)
+    expect(getFoldersSyncDoc().folders[local.id]).toEqual(local)
+  })
+  it.each([null, {}, { version: 2, folders: {} }, { version: 1, folders: { bad: { id: 'other', name: 'Bad', updatedAt: 1 } } }])('rejects invalid folders before any writes: %j', folders => {
+    session(15)
+    createFolder('Local')
+    const before = { ...localStorage }
+    const backup = JSON.parse(exportAllJSON())
+    backup.songs = [saveSong({ title: 'Imported', texData: 'tab' })]
+    localStorage.clear()
+    for (const [key, value] of Object.entries(before)) localStorage.setItem(key, value)
+    backup.folders = folders
+    expect(() => importAllJSON(JSON.stringify(backup), 'replace')).toThrow('Invalid or unsupported practice backup')
+    expect({ ...localStorage }).toEqual(before)
+  })
+  it.each(['merge', 'replace'] as const)('imports legacy backups without folders in %s mode', mode => {
+    const song = saveSong({ title: 'Legacy', texData: 'tab' })
+    const backup = JSON.parse(exportAllJSON())
+    delete backup.folders
+    localStorage.clear()
+    const folder = createFolder('Local')
+    importAllJSON(JSON.stringify(backup), mode)
+    expect(getAllSongs()).toEqual([song])
+    expect(getFolders()).toEqual([folder])
   })
   it('rejects invalid backups before modifying storage', () => {
     session(15)

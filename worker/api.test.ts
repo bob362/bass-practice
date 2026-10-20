@@ -92,9 +92,29 @@ describe('worker API',()=>{
     expect((await request('/api/progress','PUT',{version:1,sessions:[],sections:[{id:'s'}]})).status).toBe(400)
     expect((await request('/api/progress','PUT','{')).status).toBe(400)
   })
+  it('gets, merges and validates folders documents per user',async()=>{
+    expect(await (await request('/api/folders')).json()).toEqual({version:1,folders:{}})
+    await request('/api/folders','PUT',{version:1,folders:{f:{id:'f',name:'演奏',updatedAt:5}}})
+    expect(await (await request('/api/folders','PUT',{version:1,folders:{f:{id:'f',name:'older rename',updatedAt:3}}})).json()).toEqual({version:1,folders:{f:{id:'f',name:'演奏',updatedAt:5}}})
+    await request('/api/folders','PUT',{version:1,folders:{f:{id:'f',name:'演奏',updatedAt:6,deleted:true}}})
+    expect(await (await request('/api/folders')).json()).toEqual({version:1,folders:{f:{id:'f',name:'演奏',updatedAt:6,deleted:true}}})
+    await request('/api/folders','PUT',{version:1,folders:{f:{id:'f',name:'演奏',updatedAt:7}}})
+    expect(await (await request('/api/folders')).json()).toEqual({version:1,folders:{f:{id:'f',name:'演奏',updatedAt:7}}})
+    await request('/api/folders','PUT',{version:1,folders:{f:{id:'f',name:'演奏',updatedAt:8,deleted:true}}})
+    expect(await (await request('/api/folders','GET',undefined,'other@example.com')).json()).toEqual({version:1,folders:{}})
+    const busy = await request('/api/folders','PUT',{version:1,folders:{}})
+    expect(busy.status).not.toBe(405)
+    expect((await request('/api/folders','PUT',{version:1,folders:[]})).status).toBe(400)
+    expect((await request('/api/folders','PUT',{version:1,folders:{f:{id:'other',name:'x',updatedAt:1}}})).status).toBe(400)
+    expect((await request('/api/folders','PUT',{version:1,folders:{f:{id:'f',name:'x'.repeat(101),updatedAt:1}}})).status).toBe(400)
+    expect((await request('/api/folders','PUT',{version:1,folders:{f:{id:'f',name:'x',updatedAt:'1'}}})).status).toBe(400)
+    expect((await request('/api/folders','PUT',{version:1,folders:{f:{id:'f',name:'x',updatedAt:1,deleted:null}}})).status).toBe(400)
+    expect((await request('/api/folders','PUT',' '.repeat(1024*1024+1))).status).toBe(413)
+    expect((await request('/api/folders','DELETE')).status).toBe(405)
+  })
   it('returns consistent JSON errors for routes, methods and storage failures',async()=>{
     expect((await request('/api/unknown')).status).toBe(404)
-    for (const path of ['/api/songs','/api/songs/a','/api/settings','/api/progress']) expect((await request(path,'POST')).status).toBe(405)
+    for (const path of ['/api/songs','/api/songs/a','/api/settings','/api/progress','/api/folders']) expect((await request(path,'POST')).status).toBe(405)
     data.list = async()=>{throw new Error('storage unavailable')}
     const response = await request('/api/songs')
     expect(response.status).toBe(500)
@@ -124,4 +144,27 @@ it('uses JSON keys, bounded metadata and unconditional initial writes',async()=>
   expect(JSON.parse(stored.customMetadata!.summary).artist).toHaveLength(200)
   expect(await (await request('/api/songs/long')).json()).toEqual(song)
   expect((await request('/api/progress','PUT',{...emptyProgressDoc(),sections:[{id:'s',songId:'a',updatedAt:'invalid'}]})).status).toBe(400)
+})
+
+it('retains a competing folder deletion through conditional write retries', async () => {
+  const alive = {id:'f',name:'Folder',updatedAt:1}
+  await request('/api/folders','PUT',{version:1,folders:{f:alive}})
+  const originalPut = data.put.bind(data)
+  let compete = true
+  data.put = async (key,value,options) => {
+    if (compete) {
+      compete = false
+      await originalPut(key,JSON.stringify({version:1,folders:{f:{...alive,updatedAt:3,deleted:true}}}))
+    }
+    return originalPut(key,value,options)
+  }
+  const response = await request('/api/folders','PUT',{version:1,folders:{f:{...alive,name:'Rename',updatedAt:2}}})
+  expect(response.status).toBe(200)
+  expect(await response.json()).toEqual({version:1,folders:{f:{...alive,updatedAt:3,deleted:true}}})
+  data.failPuts = 3
+  expect((await request('/api/folders','PUT',{version:1,folders:{}})).status).toBe(409)
+})
+
+it('limits folders request bodies by UTF-8 bytes', async () => {
+  expect((await request('/api/folders','PUT','猫'.repeat(350000))).status).toBe(413)
 })

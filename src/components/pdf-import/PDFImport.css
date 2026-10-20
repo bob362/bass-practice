@@ -285,3 +285,372 @@
   display: flex;
   gap: 0.5rem;
 }
+
+/* ---- 曲ライブラリ（フォルダ・タグ） ---- */
+.song-library {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+
+@media (max-width: 768px) {
+  .song-library {
+    grid-template-columns: 1fr;
+  }
+}
+
+.folder-sidebar {
+  background: #242424;
+  border: 1px solid #3a3a3a;
+  border-radius: 8px;
+  padding: 0.75rem;
+}
+
+.folder-sidebar-title {
+  font-size: 0.8rem;
+  color: #888;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  margin: 0.25rem 0.5rem 0.5rem;
+}
+
+.folder-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.folder-item {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.folder-item:hover {
+  background: #2f2f2f;
+}
+
+.folder-item.selected {
+  background: #2a3a4a;
+  border-color: #4a9eff;
+}
+
+.folder-item.drop-target {
+  background: #2f3f5f;
+  border: 1px dashed #6ab0ff;
+}
+
+.folder-select-button {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.625rem;
+  background: transparent;
+  border: none;
+  color: #e0e0e0;
+  font: inherit;
+  font-size: 0.9rem;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.folder-item.selected .folder-select-button {
+  color: #aaccff;
+  font-weight: 600;
+}
+
+.folder-select-button:focus-visible,
+.folder-create-button:focus-visible,
+.tag-filter-chip:focus-visible,
+.tag-filter-clear:focus-visible,
+.tag-chip-remove:focus-visible,
+.song-item:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 1px;
+}
+
+.folder-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-count {
+  font-size: 0.75rem;
+  color: #aaa;
+  background: #3a3a3a;
+  border-radius: 999px;
+  padding: 0 0.5rem;
+  min-width: 1.5rem;
+  text-align: center;
+}
+
+.folder-item-actions {
+  display: flex;
+  gap: 0.125rem;
+  padding-right: 0.25rem;
+  opacity: 0.6;
+}
+
+.folder-item:hover .folder-item-actions,
+.folder-item:focus-within .folder-item-actions {
+  opacity: 1;
+}
+
+.folder-item-actions .icon-button {
+  border-color: transparent;
+  padding: 0.2rem 0.3rem;
+  font-size: 0.8rem;
+}
+
+.folder-inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  padding: 0.375rem;
+  width: 100%;
+}
+
+.folder-inline-form input,
+.song-search-input,
+.tag-editor-input-row input,
+.song-folder-select {
+  padding: 0.45rem 0.6rem;
+  background: #1f1f1f;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  color: #e0e0e0;
+  font: inherit;
+  font-size: 0.875rem;
+}
+
+.folder-inline-form input {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.folder-inline-form input:focus,
+.song-search-input:focus,
+.tag-editor-input-row input:focus,
+.song-folder-select:focus {
+  outline: none;
+  border-color: #4a9eff;
+}
+
+.folder-create-button {
+  width: 100%;
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  background: transparent;
+  border: 1px dashed #4a4a4a;
+  border-radius: 6px;
+  color: #aaa;
+  font: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.folder-create-button:hover {
+  color: #e0e0e0;
+  border-color: #4a9eff;
+  background: #2f2f2f;
+}
+
+.folder-error {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8rem;
+}
+
+.song-library-main {
+  min-width: 0;
+}
+
+.song-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  margin-bottom: 1rem;
+}
+
+.song-search-input {
+  width: 100%;
+  padding: 0.625rem 0.75rem;
+}
+
+.tag-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  align-items: center;
+}
+
+.tag-filter-chip {
+  padding: 0.2rem 0.65rem;
+  background: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  border-radius: 999px;
+  color: #bbb;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.tag-filter-chip:hover {
+  border-color: #4a9eff;
+  color: #e0e0e0;
+}
+
+.tag-filter-chip.active {
+  background: #4a9eff;
+  border-color: #4a9eff;
+  color: #fff;
+}
+
+.tag-filter-clear {
+  padding: 0.2rem 0.5rem;
+  background: transparent;
+  border: none;
+  color: #6ab0ff;
+  font: inherit;
+  font-size: 0.8rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.song-library .saved-songs-list {
+  margin-top: 0;
+}
+
+.song-library .info-box {
+  margin-top: 0;
+}
+
+.song-library .song-item {
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.song-library .song-item[draggable="true"] {
+  cursor: grab;
+}
+
+.song-library .song-item[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.song-library .song-info {
+  min-width: 0;
+}
+
+.song-library .song-actions {
+  align-items: center;
+  flex-wrap: wrap;
+  cursor: default;
+}
+
+.song-folder-select {
+  max-width: 10rem;
+  padding: 0.3rem 0.4rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.tag-edit-button {
+  white-space: nowrap;
+  font-size: 0.8rem;
+}
+
+.tag-edit-button.active {
+  background: #2a3a4a;
+  border-color: #4a9eff;
+  color: #aaccff;
+}
+
+.song-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.375rem;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.05rem 0.5rem;
+  background: #2a3a4a;
+  border: 1px solid #3a5070;
+  border-radius: 999px;
+  color: #aaccff;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.tag-chip.editable {
+  padding-right: 0.2rem;
+}
+
+.tag-chip-remove {
+  padding: 0 0.3rem;
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  color: #aaccff;
+  font: inherit;
+  font-size: 0.85rem;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.tag-chip-remove:hover {
+  background: #5a2a2a;
+  color: #ff8888;
+}
+
+.tag-editor {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: #1f1f1f;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  cursor: default;
+}
+
+.tag-editor-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+.tag-editor-empty {
+  font-size: 0.8rem;
+  color: #888;
+}
+
+.tag-editor-input-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.tag-editor-input-row input {
+  flex: 1;
+  min-width: 0;
+}

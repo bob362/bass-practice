@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { emptyMediaDoc, emptyProgressDoc, mergeMediaDocs, mergeProgressDocs, summarizeSong, type SongRecord } from '../shared/syncMerge'
+import { emptyFoldersDoc, emptyMediaDoc, emptyProgressDoc, mergeFoldersDocs, mergeMediaDocs, mergeProgressDocs, summarizeSong, type SongRecord } from '../shared/syncMerge'
 import { _resetCloudSyncForTests, getSyncStatus, SONGS_CHANGED_EVENT, startCloudSync, syncNow } from './cloudSync'
-import { deleteSong, getAllSongs, getMediaSyncDoc, getSongById, getSongTombstones, notifyLocalChange, putSongsFromRemote, saveSong, saveSongMediaSettings, SONGS_STORAGE_KEY, updateSong } from './storage'
+import { applyFoldersSyncDoc, createFolder, deleteFolder, deleteSong, getAllSongs, getFolders, getFoldersSyncDoc, getMediaSyncDoc, getSongById, getSongTombstones, notifyLocalChange, putSongsFromRemote, saveSong, saveSongMediaSettings, renameFolder, songFolderId, setSongFolder, setSongTags, SONGS_STORAGE_KEY, UNFILED, updateSong } from './storage'
 import { addSession, getProgressSyncDoc } from './progress'
 
 function server() {
   const songs = new Map<string, SongRecord>()
-  let media = emptyMediaDoc(), progress = emptyProgressDoc()
+  let media = emptyMediaDoc(), progress = emptyProgressDoc(), folders = emptyFoldersDoc()
   const calls: string[] = []
   const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), 'https://test.local'), method = init?.method ?? 'GET'
@@ -24,9 +24,10 @@ function server() {
     }
     if (url.pathname === '/api/settings') { media = mergeMediaDocs(media, body()); return json(media) }
     if (url.pathname === '/api/progress') { progress = mergeProgressDocs(progress, body()); return json(progress) }
+    if (url.pathname === '/api/folders') { folders = mergeFoldersDocs(folders, body()); return json(folders) }
     return json({}, 404)
   }) as unknown as typeof globalThis.fetch
-  return {songs, fetch, calls, get media() {return media}, set media(v) {media=v}, get progress() {return progress}, set progress(v) {progress=v}}
+  return {songs, fetch, calls, get media() {return media}, set media(v) {media=v}, get progress() {return progress}, set progress(v) {progress=v}, get folders() {return folders}, set folders(v) {folders=v}}
 }
 const song = (id: string, updatedAt = 10) => ({id, title:id, createdAt:1, updatedAt, texData:'tab'})
 beforeEach(() => { _resetCloudSyncForTests(); localStorage.clear() })
@@ -159,4 +160,105 @@ it.each(['edit','delete','planned-delete'])('preserves concurrent local %s durin
     expect(getSongById(id)?.title).toBe('local edit')
     expect(api.songs.get(id)?.title).toBe('local edit')
   }
+})
+
+// Each device owns every localStorage key, including its pending operation queue.
+function snapshot(): Record<string, string> {
+  return Object.fromEntries(Object.keys(localStorage).map(key => [key, localStorage.getItem(key)!]))
+}
+function restoreDevice(saved: Record<string, string>) {
+  _resetCloudSyncForTests()
+  localStorage.clear()
+  for (const [key, value] of Object.entries(saved)) localStorage.setItem(key, value)
+}
+
+describe('folder sync across devices', () => {
+  it('shares folder assignments and tags, and retains deletion over a stale folder document', async () => {
+    const api = server()
+    const folder = createFolder('Practice')
+    const saved = saveSong({title:'Bass line', texData:'tab'})
+    setSongFolder(saved.id, folder.id)
+    setSongTags(saved.id, [' Rock ', 'rock', 'Practice'])
+    const staleFolders = getFoldersSyncDoc()
+    await startCloudSync({fetch:api.fetch})
+    const deviceA = snapshot()
+    expect(api.calls.indexOf('PUT /api/folders')).toBeLessThan(api.calls.indexOf('PUT /api/settings'))
+
+    restoreDevice({})
+    await startCloudSync({fetch:api.fetch})
+    expect(getFolders()).toEqual([folder])
+    expect(getSongById(saved.id)).toMatchObject({folderId:folder.id, tags:['Rock', 'Practice']})
+    const deviceB = snapshot()
+
+    restoreDevice(deviceB)
+    deleteFolder(folder.id)
+    await startCloudSync({fetch:api.fetch})
+    expect(api.folders.folders[folder.id].deleted).toBe(true)
+
+    restoreDevice(deviceA)
+    await startCloudSync({fetch:api.fetch})
+    expect(getFolders()).toEqual([])
+    expect(getSongById(saved.id)).not.toHaveProperty('folderId')
+    expect(songFolderId(getSongById(saved.id)!)).toBe(UNFILED)
+    expect(getSongById(saved.id)?.tags).toEqual(['Rock', 'Practice'])
+
+    const afterDelete = snapshot()
+    restoreDevice(afterDelete)
+    applyFoldersSyncDoc(staleFolders)
+    await startCloudSync({fetch:api.fetch})
+    expect(getFolders()).toEqual([])
+    expect(getFoldersSyncDoc().folders[folder.id].deleted).toBe(true)
+    expect(api.folders.folders[folder.id].deleted).toBe(true)
+    expect(getSongById(saved.id)).not.toHaveProperty('folderId')
+  })
+
+  it('propagates a rename from A to B', async () => {
+    const api = server(), folder = createFolder('Before')
+    await startCloudSync({fetch:api.fetch})
+    const deviceA = snapshot()
+    restoreDevice({})
+    await startCloudSync({fetch:api.fetch})
+    const deviceB = snapshot()
+
+    restoreDevice(deviceA)
+    const renamed = renameFolder(folder.id, 'After')
+    await startCloudSync({fetch:api.fetch})
+    restoreDevice(deviceB)
+    await startCloudSync({fetch:api.fetch})
+    expect(getFolders()).toEqual([renamed])
+    expect(api.folders).toEqual(getFoldersSyncDoc())
+  })
+
+  it.each(['application/json', 'text/html'])('silently skips an old server folders 404 (%s)', async contentType => {
+    const api = server(), folder = createFolder('Local')
+    saveSong({title:'Still syncs', texData:'tab'})
+    const fetch: typeof globalThis.fetch = (input, init) => String(input).endsWith('/api/folders')
+      ? Promise.resolve(new Response(contentType === 'text/html' ? '<html>Not found</html>' : '{}', {status:404, headers:{'content-type':contentType}}))
+      : api.fetch(input, init)
+    await startCloudSync({fetch})
+    expect(getSyncStatus()).toMatchObject({state:'synced', pending:0, message:undefined})
+    expect(getFolders()).toEqual([folder])
+    expect(api.songs.size).toBe(1)
+    expect(api.calls).toContain('PUT /api/settings')
+    expect(api.calls).toContain('PUT /api/progress')
+  })
+
+  it('syncs a folders local change', async () => {
+    const api = server()
+    await startCloudSync({fetch:api.fetch})
+    const folder = createFolder('New')
+    await syncNow()
+    expect(api.folders.folders[folder.id]).toEqual(folder)
+  })
+})
+
+it('deletes a song even when its last edit is ahead of the clock', async () => {
+  const api = server(), edited = song('future', Date.now() + 10000)
+  putSongsFromRemote([edited])
+  api.songs.set(edited.id, edited)
+  deleteSong(edited.id)
+  expect(getSongTombstones()[edited.id]).toBeGreaterThan(edited.updatedAt)
+  await startCloudSync({fetch:api.fetch})
+  expect(getSyncStatus().state).toBe('synced')
+  expect(api.songs.get(edited.id)?.deleted).toBe(true)
 })

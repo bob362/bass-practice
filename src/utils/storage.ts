@@ -1,4 +1,4 @@
-import { ensureUpdatedAt, type MediaDoc } from '../shared/syncMerge'
+import { ensureUpdatedAt, emptyFoldersDoc, isFoldersDoc, type FolderEntry, type FoldersDoc, type MediaDoc } from '../shared/syncMerge'
 /**
  * 変換済みタブ譜のlocalStorage管理
  */
@@ -15,6 +15,10 @@ export interface ConvertedSong {
   gpFormat?: string
   createdAt: number
   updatedAt: number
+  /** 所属フォルダ。旧データは未分類扱い */
+  folderId?: string
+  /** タグ。旧データはタグなし扱い */
+  tags?: string[]
 }
 
 const STORAGE_KEY = 'bass_practice_songs'
@@ -22,7 +26,7 @@ const STORAGE_KEY = 'bass_practice_songs'
 /**
  * 全ての曲を取得
  */
-export type LocalChange = {kind:'song-saved'; id:string} | {kind:'song-deleted'; id:string; deletedAt:number} | {kind:'media'; songId:string} | {kind:'progress'} | {kind:'all'}
+export type LocalChange = {kind:'song-saved'; id:string} | {kind:'song-deleted'; id:string; deletedAt:number} | {kind:'media'; songId:string} | {kind:'progress'} | {kind:'folders'} | {kind:'all'}
 export const LOCAL_CHANGE_EVENT = 'bass-practice:local-change'
 export function notifyLocalChange(c: LocalChange) {
   if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(LOCAL_CHANGE_EVENT, { detail: c }))
@@ -64,7 +68,8 @@ function writeSongs(songs: ConvertedSong[], preferEvict: string[] = []) {
 export function getAllSongs(): ConvertedSong[] {
   let stored: ConvertedSong[] = []
   try { const data = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]'); if (Array.isArray(data)) stored = data } catch { /* Use memory when storage is unavailable. */ }
-  return [...new Map([...stored, ...memorySongs.values()].map(s => [s.id, ensureUpdatedAt(s, 0)])).values()]
+  const sanitize = (s: ConvertedSong): ConvertedSong => Array.isArray(s.tags) || s.tags === undefined ? s : {...s, tags: undefined}
+  return [...new Map([...stored, ...memorySongs.values()].map(s => [s.id, ensureUpdatedAt(sanitize(s), 0)])).values()]
 }
 export function putSongsFromRemote(songs: ConvertedSong[]) {
   writeSongs([...new Map([...getAllSongs(), ...songs].map(s => [s.id, s])).values()], songs.map(s => s.id))
@@ -108,7 +113,7 @@ export function updateSong(id: string, updates: Partial<Omit<ConvertedSong, 'id'
   songs[index] = {
     ...songs[index],
     ...updates,
-    updatedAt: Date.now(),
+    updatedAt: Math.max(Date.now(), songs[index].updatedAt + 1),
   }
   
   writeSongs(songs, [id])
@@ -127,7 +132,7 @@ export function deleteSong(id: string): boolean {
   if (filtered.length === songs.length) return false
   
   writeSongs(filtered)
-  const deletedAt = Date.now()
+  const deletedAt = Math.max(Date.now(), songs.find(s => s.id === id)!.updatedAt + 1)
   setSongTombstones({ ...getSongTombstones(), [id]: deletedAt })
   notifyLocalChange({kind: 'song-deleted', id, deletedAt})
   return true
@@ -251,4 +256,113 @@ export function touchMediaMeta(ids: string[], at: number) {
   const meta = readMap<number>(MEDIA_META_KEY)
   for (const id of ids) meta[id] = at
   localStorage.setItem(MEDIA_META_KEY, JSON.stringify(meta))
+}
+
+/**
+ * フォルダとタグの管理
+ */
+export const FOLDERS_STORAGE_KEY = 'bass_practice_folders'
+export const UNFILED = '__unfiled__'
+export const ALL_FOLDERS = '__all__'
+
+export function getFoldersSyncDoc(): FoldersDoc {
+  try { const v: unknown = JSON.parse(localStorage.getItem(FOLDERS_STORAGE_KEY) ?? 'null'); return isFoldersDoc(v) ? v : emptyFoldersDoc() } catch { return emptyFoldersDoc() }
+}
+export function applyFoldersSyncDoc(doc: FoldersDoc) { localStorage.setItem(FOLDERS_STORAGE_KEY, JSON.stringify(doc)) }
+
+export function getFolders(): FolderEntry[] {
+  return Object.values(getFoldersSyncDoc().folders).filter(e => !e.deleted).sort((a, b) => a.name.localeCompare(b.name, 'ja'))
+}
+
+export function createFolder(name: string): FolderEntry {
+  const trimmed = name.trim()
+  if (!trimmed) throw new Error('フォルダ名を入力してください')
+  if (trimmed.length > 100) throw new Error('フォルダ名は100文字以内で入力してください')
+  const doc = getFoldersSyncDoc()
+  if (Object.values(doc.folders).some(e => !e.deleted && e.name === trimmed)) throw new Error('同じ名前のフォルダがあります')
+  const entry: FolderEntry = {id: `folder_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`, name: trimmed, updatedAt: Date.now()}
+  applyFoldersSyncDoc({...doc, folders: {...doc.folders, [entry.id]: entry}})
+  notifyLocalChange({kind: 'folders'})
+  return entry
+}
+
+export function renameFolder(id: string, name: string): FolderEntry | null {
+  const trimmed = name.trim()
+  if (!trimmed) throw new Error('フォルダ名を入力してください')
+  if (trimmed.length > 100) throw new Error('フォルダ名は100文字以内で入力してください')
+  const doc = getFoldersSyncDoc()
+  const entry = Object.prototype.hasOwnProperty.call(doc.folders, id) ? doc.folders[id] : undefined
+  if (!entry || entry.deleted) return null
+  if (Object.values(doc.folders).some(e => e.id !== id && !e.deleted && e.name === trimmed)) throw new Error('同じ名前のフォルダがあります')
+  const updated: FolderEntry = {...entry, name: trimmed, updatedAt: Math.max(Date.now(), entry.updatedAt + 1)}
+  applyFoldersSyncDoc({...doc, folders: {...doc.folders, [id]: updated}})
+  for (const song of getAllSongs()) if (song.folderId === id) updateSong(song.id, {folderId: id})
+  notifyLocalChange({kind: 'folders'})
+  return updated
+}
+
+export function deleteFolder(id: string): boolean {
+  const doc = getFoldersSyncDoc()
+  const entry = Object.prototype.hasOwnProperty.call(doc.folders, id) ? doc.folders[id] : undefined
+  if (!entry || entry.deleted) return false
+  applyFoldersSyncDoc({...doc, folders: {...doc.folders, [id]: {...entry, updatedAt: Math.max(Date.now(), entry.updatedAt + 1), deleted: true}}})
+  const now = Date.now(), songs = getAllSongs(), affected = songs.filter(s => s.folderId === id)
+  writeSongs(songs.map(s => {
+    if (s.folderId !== id) return s
+    const {folderId, ...rest} = s
+    return {...rest, updatedAt: Math.max(now, s.updatedAt + 1)}
+  }))
+  for (const song of affected) notifyLocalChange({kind: 'song-saved', id: song.id})
+  notifyLocalChange({kind: 'folders'})
+  return true
+}
+
+export function setSongFolder(songId: string, folderId: string | null): ConvertedSong | null {
+  const song = getSongById(songId)
+  if (!song) return null
+  if (folderId === null || folderId === UNFILED) {
+    const {folderId: previousFolder, ...rest} = song
+    const updated = {...rest, updatedAt: Math.max(Date.now(), song.updatedAt + 1)}
+    writeSongs(getAllSongs().map(s => s.id === songId ? updated : s), [songId])
+    clearTombstones([songId])
+    notifyLocalChange({kind: 'song-saved', id: songId})
+    return updated
+  }
+  return updateSong(songId, {folderId})
+}
+
+export function normalizeTags(tags: string[]): string[] {
+  const seen = new Set<string>(), out: string[] = []
+  for (const raw of tags) {
+    const tag = raw.trim().replace(/\s+/g, ' ').slice(0, 30)
+    const key = tag.toLowerCase()
+    if (!tag || seen.has(key)) continue
+    seen.add(key); out.push(tag)
+    if (out.length >= 20) break
+  }
+  return out
+}
+
+export function setSongTags(songId: string, tags: string[]): ConvertedSong | null {
+  return updateSong(songId, {tags: normalizeTags(tags)})
+}
+
+export function getAllTags(songs: ConvertedSong[] = getAllSongs()): string[] {
+  return [...new Set(songs.flatMap(s => Array.isArray(s.tags) ? s.tags : []))].sort((a, b) => a.localeCompare(b, 'ja'))
+}
+
+export function songFolderId(song: ConvertedSong, folders: FolderEntry[] = getFolders()): string {
+  return song.folderId && folders.some(f => f.id === song.folderId && !f.deleted) ? song.folderId : UNFILED
+}
+
+export interface SongFilter { folderId: string; tags: string[]; query: string }
+export function filterSongs(songs: ConvertedSong[], filter: SongFilter, folders: FolderEntry[] = getFolders()): ConvertedSong[] {
+  const terms = filter.query.trim().toLowerCase().split(/\s+/).filter(Boolean), wanted = filter.tags.map(t => t.toLowerCase())
+  return songs.filter(song => {
+    if (filter.folderId !== ALL_FOLDERS && songFolderId(song, folders) !== filter.folderId) return false
+    const tags = (Array.isArray(song.tags) ? song.tags : []).map(t => t.toLowerCase())
+    if (!wanted.every(w => tags.includes(w))) return false
+    const haystack = [...[song.title, song.artist].filter(t => typeof t === 'string') as string[], ...(Array.isArray(song.tags) ? song.tags : [])]
+    return terms.every(t => haystack.some(v => v.toLowerCase().includes(t)))
+  })
 }

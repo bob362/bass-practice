@@ -1,5 +1,5 @@
-import { sectionKey, type ProgressDoc } from '../shared/syncMerge'
-import { notifyLocalChange, touchMediaMeta, getSongTombstones, setSongTombstones } from './storage'
+import { sectionKey, mergeFoldersDocs, isFoldersDoc, type FoldersDoc, type ProgressDoc } from '../shared/syncMerge'
+import { notifyLocalChange, touchMediaMeta, getSongTombstones, setSongTombstones, getFoldersSyncDoc, applyFoldersSyncDoc } from './storage'
 import { getAllSongs, getAllMediaSettings, isSongMediaSettings, SONGS_STORAGE_KEY, MEDIA_STORAGE_KEY } from './storage'
 import type { ConvertedSong, SongMediaSettings } from './storage'
 
@@ -110,9 +110,9 @@ export function songProgress(songId: string): { mastered: number; total: number;
   const mastered = sections.filter(s => s.status === 'mastered').length
   return { mastered, total: sections.length, percent: sections.length ? mastered / sections.length * 100 : 0 }
 }
-export interface PracticeBackup { version: 1; songs: ConvertedSong[]; media: Record<string, SongMediaSettings>; progress: ProgressData }
+export interface PracticeBackup { version: 1; songs: ConvertedSong[]; media: Record<string, SongMediaSettings>; progress: ProgressData; folders?: FoldersDoc }
 export function exportAllJSON(): string {
-  return JSON.stringify({ version: 1, songs: getAllSongs(), media: getAllMediaSettings(), progress: read() } satisfies PracticeBackup, null, 2)
+  return JSON.stringify({ version: 1, songs: getAllSongs(), media: getAllMediaSettings(), progress: read(), folders: getFoldersSyncDoc() } satisfies PracticeBackup, null, 2)
 }
 function songValid(v: unknown): v is ConvertedSong {
   return record(v) && nonempty(v.id) && typeof v.title === 'string' && typeof v.texData === 'string' &&
@@ -124,7 +124,8 @@ export function importAllJSON(json: string, options: 'merge' | 'replace' | { mod
   const value: unknown = JSON.parse(json)
   const mode = typeof options === 'string' ? options : options.mode
   if (!['merge', 'replace'].includes(mode) || !record(value) || value.version !== 1 || !Array.isArray(value.songs) || !value.songs.every(songValid) ||
-    new Set(value.songs.map(s => s.id)).size !== value.songs.length || !record(value.media) || !Object.values(value.media).every(isSongMediaSettings) || !progressValid(value.progress)) throw new Error('Invalid or unsupported practice backup')
+    new Set(value.songs.map(s => s.id)).size !== value.songs.length || !record(value.media) || !Object.values(value.media).every(isSongMediaSettings) || !progressValid(value.progress) ||
+    (value.folders !== undefined && !isFoldersDoc(value.folders))) throw new Error('Invalid or unsupported practice backup')
   const imported = value as unknown as PracticeBackup
   const localSongs = getAllSongs(), localSections = read().sections
   let songs = imported.songs, media = imported.media, progress = { ...imported.progress, accuracy: imported.progress.accuracy ?? [] }
@@ -158,6 +159,10 @@ export function importAllJSON(json: string, options: 'merge' | 'replace' | { mod
   setSongTombstones(songTombstones)
   localStorage.setItem(SECTION_TOMBSTONES_KEY, JSON.stringify(deletedSections))
   touchMediaMeta(Object.keys(imported.media), now)
+  if (imported.folders !== undefined) {
+    applyFoldersSyncDoc(mergeFoldersDocs(getFoldersSyncDoc(), imported.folders))
+    notifyLocalChange({kind:'folders'})
+  }
   notifyLocalChange({kind:'all'})
 }
 

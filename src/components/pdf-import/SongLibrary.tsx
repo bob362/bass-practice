@@ -21,6 +21,8 @@ interface SongLibraryProps {
 const errorText = (err: unknown) => (err instanceof Error ? err.message : '不明なエラー')
 const splitTagInput = (text: string) => text.split(/[,、，]/).map(t => t.trim()).filter(Boolean)
 const stop = (e: React.SyntheticEvent) => e.stopPropagation()
+/** IME 変換中（日本語入力の確定 Enter など）のキー入力か */
+const isComposingKey = (e: React.KeyboardEvent) => e.nativeEvent.isComposing || e.keyCode === 229
 const hasSongDrag = (e: React.DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes(SONG_DRAG_TYPE)
 
 export default function SongLibrary({ songs, onOpenSong, onDeleteSong, onSongsUpdated }: SongLibraryProps) {
@@ -222,7 +224,7 @@ export default function SongLibrary({ songs, onOpenSong, onDeleteSong, onSongsUp
                     type="text"
                     value={editFolderName}
                     onChange={e => setEditFolderName(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Escape') { setEditingFolderId(null); setFolderError(null) } }}
+                    onKeyDown={e => { if (!isComposingKey(e) && e.key === 'Escape') { setEditingFolderId(null); setFolderError(null) } }}
                     aria-label={`フォルダ「${folder.name}」の新しい名前`}
                     autoFocus
                   />
@@ -269,7 +271,7 @@ export default function SongLibrary({ songs, onOpenSong, onDeleteSong, onSongsUp
               type="text"
               value={newFolderName}
               onChange={e => setNewFolderName(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Escape') { setCreating(false); setFolderError(null) } }}
+              onKeyDown={e => { if (!isComposingKey(e) && e.key === 'Escape') { setCreating(false); setFolderError(null) } }}
               placeholder="フォルダ名"
               aria-label="新しいフォルダ名"
               autoFocus
@@ -439,6 +441,7 @@ export default function SongLibrary({ songs, onOpenSong, onDeleteSong, onSongsUp
                           onChange={e => setTagInput(e.target.value)}
                           onKeyDown={e => {
                             e.stopPropagation()
+                            if (isComposingKey(e)) return
                             if (e.key === 'Enter') { e.preventDefault(); addTags(song) }
                             if (e.key === 'Escape') setTagEditorFor(null)
                           }}

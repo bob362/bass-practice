@@ -209,6 +209,20 @@ it('changes folder via select and edits tags without opening the song', () => {
   expect(opened).toHaveBeenCalledTimes(1)
 })
 
+it('ignores Enter while IME composition is active in the tag editor', () => {
+  const gammaRow = () => $$('.song-item').find(r => r.textContent?.includes('Gamma'))!
+  click(gammaRow().querySelector('.tag-edit-button')!)
+  const input = gammaRow().querySelector<HTMLInputElement>('.tag-editor input')!
+  setInput(input, 'ベース')
+  act(() => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true })) })
+  expect(fake.state.songs[2].tags).toBeUndefined()
+  expect(input.value).toBe('ベース')
+  act(() => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true })) })
+  expect(gammaRow().querySelector('.tag-editor input')).toBe(input)
+  act(() => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })) })
+  expect(fake.state.songs[2].tags).toEqual(['ベース'])
+})
+
 it('drops a dragged song onto a folder', () => {
   const data = new Map<string, string>()
   const dt = {

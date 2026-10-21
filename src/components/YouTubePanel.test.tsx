@@ -356,3 +356,46 @@ it('poll converts YouTube volume back through the master volume', async () => {
   expect(getSongMediaSettings('song1').volume).toBe(60)
   expect(player.setVolume.mock.calls.slice(calls).every(call => call[0] === 30)).toBe(true)
 })
+
+it('poll re-applies the master ceiling when YouTube volume exceeds it', async () => {
+  vi.useFakeTimers({ toFake: [...FAKE.toFake] })
+  saveSongMediaSettings('song1', { playthroughUrl: URL1, volume: 100, masterVolume: 50 })
+  await renderReady()
+  const player = players[0]
+  await act(async () => { vi.advanceTimersByTime(3000) })
+  expect(player.setVolume.mock.calls.at(-1)).toEqual([50])
+  const setItem = vi.spyOn(Storage.prototype, 'setItem')
+  const calls = player.setVolume.mock.calls.length
+  // ユーザーがYouTube側で80に上げた（マスター50では表現できない）
+  player.vol = 80
+  await act(async () => { vi.advanceTimersByTime(3000) })
+  await flushPromises()
+  expect(player.setVolume.mock.calls.slice(calls)).toEqual([[50]])
+  expect(player.vol).toBe(50)
+  expect(setItem).not.toHaveBeenCalled()
+  expect(getSongMediaSettings('song1').volume).toBe(100)
+  expect(getSongMediaSettings('song1').masterVolume).toBe(50)
+  // 書き込みループにならない
+  await act(async () => { vi.advanceTimersByTime(5000) })
+  expect(player.setVolume.mock.calls.slice(calls)).toEqual([[50]])
+  expect(setItem).not.toHaveBeenCalled()
+})
+
+it('poll saves a representable YouTube volume without re-applying it', async () => {
+  vi.useFakeTimers({ toFake: [...FAKE.toFake] })
+  saveSongMediaSettings('song1', { playthroughUrl: URL1, volume: 40, masterVolume: 50 })
+  await renderReady()
+  const player = players[0]
+  await act(async () => { vi.advanceTimersByTime(3000) })
+  expect(player.setVolume.mock.calls.at(-1)).toEqual([20])
+  const calls = player.setVolume.mock.calls.length
+  player.vol = 30
+  await act(async () => { vi.advanceTimersByTime(3000) })
+  await flushPromises()
+  expect(getSongMediaSettings('song1').volume).toBe(60)
+  expect(getSongMediaSettings('song1').masterVolume).toBe(50)
+  await act(async () => { vi.advanceTimersByTime(5000) })
+  expect(player.setVolume.mock.calls.slice(calls).every(call => call[0] === 30)).toBe(true)
+  expect(player.vol).toBe(30)
+  expect(getSongMediaSettings('song1').volume).toBe(60)
+})

@@ -100,8 +100,11 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
   tabRef.current = { playTab, pauseTab, seekTab, getTabSec }
   // 最新の音量設定（ポーリングやonReadyから参照。変更時は即座に更新して書き込みループを防ぐ）
   // volume はプレイヤーに設定する実際の音量（曲 × マスター）
-  const volumeRef = useRef({ volume: playerVolume, muted, master: masterVolume })
-  volumeRef.current = { volume: playerVolume, muted, master: masterVolume }
+  // song は保存されている曲の音量、mix は最新のミキサー設定
+  const volumeRef = useRef({ volume: playerVolume, muted, master: masterVolume, song: songVolume })
+  volumeRef.current = { volume: playerVolume, muted, master: masterVolume, song: songVolume }
+  const mixRef = useRef(mix)
+  mixRef.current = mix
   const lastVolumeAppliedAt = useRef(0)
 
   useEffect(() => {
@@ -352,6 +355,8 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
       if (r.volume === latest.volume && r.muted === latest.muted) return
       const updates: Partial<SongMediaSettings> = {}
       if (r.muted !== latest.muted) updates.muted = r.muted
+      let nextVolume = latest.volume
+      let nextSong = latest.song
       if (r.volume !== latest.volume) {
         // 実際の音量からマスター分を割り戻して曲の音量にする
         const song = songVolumeFromPlayerVolume(r.volume, latest.master)
@@ -360,10 +365,21 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
           applyVolume(player, latest.volume, r.muted)
           lastVolumeAppliedAt.current = performance.now()
         } else {
-          updates.volume = song
+          // 曲の音量とマスターから決まる実際の音量。マスターを超える音量など
+          // 表現できない値だった場合は、表現できる音量にプレイヤーを合わせ直す
+          const effective = youtubeVolumeFor({ ...mixRef.current, songVolume: song, masterVolume: latest.master })
+          if (effective !== r.volume) {
+            applyVolume(player, effective, r.muted)
+            lastVolumeAppliedAt.current = performance.now()
+          }
+          nextVolume = effective
+          if (song !== latest.song) {
+            updates.volume = song
+            nextSong = song
+          }
         }
       }
-      volumeRef.current = { ...latest, volume: 'volume' in updates ? r.volume : latest.volume, muted: r.muted }
+      volumeRef.current = { ...latest, volume: nextVolume, song: nextSong, muted: r.muted }
       if (Object.keys(updates).length) update(updates)
     }, VOLUME_POLL_MS)
     return () => window.clearInterval(id)
@@ -371,12 +387,12 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
 
   const handleSongVolumeChange = (v: number) => {
     const nextMuted = muted && v === 0 ? true : false
-    volumeRef.current = { volume: youtubeVolumeFor({ ...mix, songVolume: v }), muted: nextMuted, master: masterVolume }
+    volumeRef.current = { volume: youtubeVolumeFor({ ...mix, songVolume: v }), muted: nextMuted, master: masterVolume, song: v }
     update({ volume: v, muted: nextMuted })
   }
 
   const handleMasterVolumeChange = (v: number) => {
-    volumeRef.current = { volume: youtubeVolumeFor({ ...mix, masterVolume: v }), muted, master: v }
+    volumeRef.current = { volume: youtubeVolumeFor({ ...mix, masterVolume: v }), muted, master: v, song: songVolume }
     update({ masterVolume: v })
   }
 

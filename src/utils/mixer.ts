@@ -63,11 +63,14 @@ export function isBassTrack(track: any): boolean {
   })
 }
 
-/** ベースが見つからなければ最初の非打楽器トラックを使う。 */
+/** ベース未検出時は非打楽器トラックが1つの場合のみ代用する。 */
 export function splitTracks(score: any): { bass: any[]; other: any[] } {
   const tracks: any[] = Array.isArray(score?.tracks) ? score.tracks : []
   const bass = tracks.filter(isBassTrack)
-  if (!bass.length && tracks.length) bass.push(tracks.find(track => !isPercussionTrack(track)) ?? tracks[0])
+  if (!bass.length) {
+    const nonPercussion = tracks.filter(track => !isPercussionTrack(track))
+    if (nonPercussion.length === 1) bass.push(nonPercussion[0])
+  }
   return { bass, other: tracks.filter(track => !bass.includes(track)) }
 }
 

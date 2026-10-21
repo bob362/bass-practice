@@ -50,10 +50,22 @@ describe('mixer', () => {
     expect(isBassTrack(null)).toBe(false)
   })
 
-  it('トラックを分離し、検出できなければ代替を選ぶ', () => {
+  it('検出したベースとその他のトラックを分離する', () => {
     expect(splitTracks({ tracks: [guitar, bass, drums] })).toEqual({ bass: [bass], other: [guitar, drums] })
+  })
+
+  it('ベース未検出時は唯一の非打楽器トラックを代用する', () => {
+    expect(splitTracks({ tracks: [guitar] })).toEqual({ bass: [guitar], other: [] })
     expect(splitTracks({ tracks: [drums, guitar] })).toEqual({ bass: [guitar], other: [drums] })
-    expect(splitTracks({ tracks: [drums] })).toEqual({ bass: [drums], other: [] })
+  })
+
+  it('ギターが複数ある場合や打楽器のみの場合は代用しない', () => {
+    const secondGuitar = { staves: [{ tuning: [40, 45, 50, 55, 59, 64] }] }
+    expect(splitTracks({ tracks: [guitar, secondGuitar] })).toEqual({ bass: [], other: [guitar, secondGuitar] })
+    expect(splitTracks({ tracks: [drums] })).toEqual({ bass: [], other: [drums] })
+  })
+
+  it('トラックがなければ空の配列を返す', () => {
     for (const score of [null, {}, { tracks: [] }, { tracks: 'invalid' }]) {
       expect(splitTracks(score)).toEqual({ bass: [], other: [] })
     }

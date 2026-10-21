@@ -1010,6 +1010,73 @@
   }
 }
 
+/* スマホ幅：譜面・YouTube/ボリューム・操作パネルを縦に積み、各々を全幅にする */
+@media (max-width: 767px) {
+  .header {
+    padding: 0.75rem 1rem;
+  }
+
+  .header-right {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    width: 100%;
+  }
+
+  .sync-status-pill {
+    max-width: 100%;
+  }
+
+  .nav-button {
+    padding: 0.5rem 0.75rem;
+    white-space: nowrap;
+  }
+
+  .main-content {
+    flex-direction: column;
+    overflow-x: hidden;
+    overflow-y: auto;
+    min-height: 0;
+  }
+
+  .main-content > .tab-container {
+    flex: 0 0 auto !important;
+    overflow: visible !important;
+    min-width: 0;
+  }
+
+  .tab-container > .tab-viewer-pane {
+    flex: 0 0 60vh !important;
+    height: 60vh;
+  }
+
+  .youtube-panel {
+    min-width: 0;
+    padding: 0.75rem;
+  }
+
+  .youtube-url-row .text-input {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .controls-panel {
+    width: 100%;
+    flex: 0 0 auto;
+    border-left: none;
+    border-top: 1px solid #3a3a3a;
+    padding: 1rem;
+    overflow: visible;
+  }
+
+  .volume-mixer .slider {
+    width: 100%;
+  }
+
+  .volume-row .slider-label {
+    align-items: center;
+  }
+}
+
 /* ===== alphaTab カーソル（alphaTab 1.8 は CSS を同梱しないため自前で定義） ===== */
 .at-cursor-bar {
   background: rgba(74, 158, 255, 0.12);

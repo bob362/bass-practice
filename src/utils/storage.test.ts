@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   MEDIA_STORAGE_KEY,
+  getMediaSyncDoc,
+  applyMediaSyncDoc,
   getSongMediaSettings,
   isSongMediaSettings,
   saveSongMediaSettings,
@@ -18,6 +20,8 @@ describe('storage SongMediaSettings', () => {
     const settings = getSongMediaSettings('song1')
     expect(settings.originalOffsetSec).toBe(1)
     expect(settings.volume).toBe(100)
+    expect(settings.bassVolume).toBe(100)
+    expect(settings.masterVolume).toBe(100)
     expect(settings.muted).toBe(false)
   })
 
@@ -49,8 +53,35 @@ describe('storage SongMediaSettings', () => {
     expect(loaded.song2.volume).toBe(42)
     expect(loaded.song2.muted).toBe(true)
     expect(getSongMediaSettings('song2')).toEqual({
-      playthroughOffsetSec: 0, originalOffsetSec: 0, playbackRate: 1, volume: 42, muted: true,
+      playthroughOffsetSec: 0, originalOffsetSec: 0, playbackRate: 1, volume: 42, bassVolume: 100, masterVolume: 100, muted: true,
     })
+  })
+
+  it.each(['bassVolume', 'masterVolume'] as const)('%s の検証と保存時のクランプ', key => {
+    const base = { playthroughOffsetSec: 0, originalOffsetSec: 0, playbackRate: 1 }
+    for (const value of [undefined, 0, 33.6, 100]) {
+      expect(isSongMediaSettings({ ...base, [key]: value })).toBe(true)
+    }
+    for (const value of [-1, 101, NaN, Infinity, -Infinity, '50', null]) {
+      expect(isSongMediaSettings({ ...base, [key]: value })).toBe(false)
+    }
+    for (const [value, expected] of [[150, 100], [-5, 0], [33.6, 34]]) {
+      expect(saveSongMediaSettings('song1', { [key]: value })[key]).toBe(expected)
+      expect(getSongMediaSettings('song1')[key]).toBe(expected)
+    }
+    for (const value of [NaN, Infinity, -Infinity]) {
+      expect(() => saveSongMediaSettings('song1', { [key]: value })).toThrow('Invalid media settings')
+    }
+  })
+
+  it('既存のメディア同期でベースとマスター音量を往復できる', () => {
+    const saved = saveSongMediaSettings('song1', { bassVolume: 37, masterVolume: 62 })
+    const doc = getMediaSyncDoc()
+    expect(doc.entries.song1.settings).toEqual(saved)
+    localStorage.clear()
+    applyMediaSyncDoc(doc)
+    expect(getSongMediaSettings('song1')).toEqual(saved)
+    expect(getMediaSyncDoc()).toEqual(doc)
   })
 
   it('saveSongMediaSettings は非有限 volume で例外を投げる', () => {

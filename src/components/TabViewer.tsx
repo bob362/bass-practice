@@ -6,6 +6,8 @@ import { listSections, updateSectionTempo, upsertSection } from '../utils/progre
 import type { PracticeSection } from '../utils/progress'
 import { usePracticeTimer } from '../hooks/usePracticeTimer'
 import YouTubePanel from './YouTubePanel'
+import { applyAlphaTabMix } from '../utils/mixer'
+import type { AlphaTabMix } from '../utils/mixer'
 import type { PositionListener } from './YouTubePanel'
 import SectionPanel from './SectionPanel'
 import type { BarRange } from './SectionPanel'
@@ -226,11 +228,14 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
     api.timePosition = Math.max(0, tabSec) * 1000 / (api.playbackSpeed || 1)
   }, [])
 
-  /** 譜面の音を消す（masterVolume=0）。プレイヤーは動かしたままなのでカーソル・同期は維持される */
-  const tabMutedRef = useRef(false)
-  const setTabMuted = useCallback((muted: boolean) => {
-    tabMutedRef.current = muted
-    if (apiRef.current) apiRef.current.masterVolume = muted ? 0 : 1
+  /**
+   * 譜面の音量バランス（マスター・ベース・その他のトラック）を反映する。
+   * 音量0でもプレイヤーは動かしたままなのでカーソル・同期は維持される
+   */
+  const mixRef = useRef<AlphaTabMix>({ master: 1, bass: 1, other: 1 })
+  const setTabMix = useCallback((mix: AlphaTabMix) => {
+    mixRef.current = mix
+    if (apiRef.current) applyAlphaTabMix(apiRef.current, mix)
   }, [])
 
   const startPass = (startTick: number) => {
@@ -366,6 +371,8 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
       api.renderFinished.on(() => {
         // 譜面を差し替えるとプレイヤーも作り直されるため、速度を再適用する
         api.playbackSpeed = tempoRef.current / 100
+        // トラックごとの音量もリセットされるので、音量バランスを再適用する（簡略化譜面への切り替え時も）
+        applyAlphaTabMix(api, mixRef.current)
         setLoadError(null)
         setBarCount(api.score?.masterBars?.length ?? 0)
         setIsReady(true)
@@ -440,9 +447,9 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
     }
   }, [tempo, isReady])
 
-  // 曲の読み込み直後にも譜面の音のオン/オフを反映
+  // 曲の読み込み直後にも譜面の音量バランスを反映
   useEffect(() => {
-    if (apiRef.current && isReady) apiRef.current.masterVolume = tabMutedRef.current ? 0 : 1
+    if (apiRef.current && isReady) applyAlphaTabMix(apiRef.current, mixRef.current)
   }, [isReady])
 
   // PDFレンダリング
@@ -643,7 +650,7 @@ export default function TabViewer({ filePath, pdfData, songId = null, onFileImpo
           playTab={playTab}
           pauseTab={pauseTab}
           seekTab={seekTab}
-          onTabMutedChange={setTabMuted}
+          onTabMixChange={setTabMix}
         />
       </div>
       <div className="controls-panel">

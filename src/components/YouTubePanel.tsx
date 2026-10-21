@@ -5,6 +5,8 @@ import { getSongMediaSettings, saveSongMediaSettings } from '../utils/storage'
 import type { SongMediaSettings } from '../utils/storage'
 import { applyVolume, readPlayerVolume } from '../utils/youtubeVolume'
 import { SONGS_CHANGED_EVENT } from '../utils/cloudSync'
+import { alphaTabMixFor, mixFromMediaSettings, songVolumeFromPlayerVolume, youtubeVolumeFor } from '../utils/mixer'
+import type { AlphaTabMix } from '../utils/mixer'
 
 type Slot = 'playthrough' | 'original'
 
@@ -50,11 +52,11 @@ interface YouTubePanelProps {
   pauseTab?: () => void
   /** 譜面を指定位置（100%テンポ基準の秒）にシークする */
   seekTab?: (tabSec: number) => void
-  /** 譜面の音を鳴らさない設定が変わったとき（曲の読み込み時にも呼ぶ） */
-  onTabMutedChange?: (muted: boolean) => void
+  /** 譜面（alphaTab）の音量バランスが変わったとき（曲の読み込み時にも呼ぶ） */
+  onTabMixChange?: (mix: AlphaTabMix) => void
 }
 
-export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTabSec, subscribePosition, playTab, pauseTab, seekTab, onTabMutedChange }: YouTubePanelProps) {
+export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTabSec, subscribePosition, playTab, pauseTab, seekTab, onTabMixChange }: YouTubePanelProps) {
   const [slot, setSlot] = useState<Slot>('playthrough')
   const [settings, setSettings] = useState<SongMediaSettings>(() => getSongMediaSettings(songId ?? ''))
   const [urlDraft, setUrlDraft] = useState('')
@@ -80,9 +82,15 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
   const offsetSec = settings[offsetKey(slot)]
   const video = parseYouTubeUrl(url)
   const videoId = video?.videoId ?? null
-  const volume = settings.volume ?? 100
-  const muted = settings.muted ?? false
-  const tabMuted = settings.tabMuted ?? false
+  const mix = mixFromMediaSettings(settings)
+  const songVolume = mix.songVolume
+  const bassVolume = mix.bassVolume
+  const masterVolume = mix.masterVolume
+  const muted = mix.songMuted
+  const tabMuted = mix.bassMuted
+  /** YouTubeプレイヤーに設定する実際の音量（曲 × マスター） */
+  const playerVolume = youtubeVolumeFor(mix)
+  const tabMix = alphaTabMixFor(mix)
 
   // 最新値をイベントハンドラから参照するためのref
   const syncRef = useRef({ syncEnabled, offsetSec, tempoPercent, playbackRate: settings.playbackRate, isTabPlaying })
@@ -91,8 +99,9 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
   const tabRef = useRef({ playTab, pauseTab, seekTab, getTabSec })
   tabRef.current = { playTab, pauseTab, seekTab, getTabSec }
   // 最新の音量設定（ポーリングやonReadyから参照。変更時は即座に更新して書き込みループを防ぐ）
-  const volumeRef = useRef({ volume, muted })
-  volumeRef.current = { volume, muted }
+  // volume はプレイヤーに設定する実際の音量（曲 × マスター）
+  const volumeRef = useRef({ volume: playerVolume, muted, master: masterVolume })
+  volumeRef.current = { volume: playerVolume, muted, master: masterVolume }
   const lastVolumeAppliedAt = useRef(0)
 
   useEffect(() => {
@@ -316,17 +325,19 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
     }
   }, [syncEnabled, isPlayerReady, checkVideoSeek])
 
-  // 譜面の音のオン/オフを譜面側に伝える
+  // 譜面の音量バランス（マスター・ベース・その他のトラック）を譜面側に伝える
+  // オブジェクトを依存にすると毎回呼ばれるので、数値ごとに依存させる
+  const { master: tabMaster, bass: tabBass, other: tabOther } = tabMix
   useEffect(() => {
-    onTabMutedChange?.(tabMuted)
-  }, [tabMuted, onTabMutedChange])
+    onTabMixChange?.({ master: tabMaster, bass: tabBass, other: tabOther })
+  }, [tabMaster, tabBass, tabOther, onTabMixChange])
 
   // 音量・ミュートをプレイヤーに反映
   useEffect(() => {
     if (!isPlayerReady || !playerRef.current) return
-    applyVolume(playerRef.current, volume, muted)
+    applyVolume(playerRef.current, playerVolume, muted)
     lastVolumeAppliedAt.current = performance.now()
-  }, [volume, muted, isPlayerReady])
+  }, [playerVolume, muted, isPlayerReady])
 
   // YouTube側のコントロールで変更された音量を取り込む
   useEffect(() => {
@@ -338,22 +349,39 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
       const r = readPlayerVolume(player)
       if (!r) return
       const latest = volumeRef.current
-      if (r.volume !== latest.volume || r.muted !== latest.muted) {
-        volumeRef.current = r
-        update({ volume: r.volume, muted: r.muted })
+      if (r.volume === latest.volume && r.muted === latest.muted) return
+      const updates: Partial<SongMediaSettings> = {}
+      if (r.muted !== latest.muted) updates.muted = r.muted
+      if (r.volume !== latest.volume) {
+        // 実際の音量からマスター分を割り戻して曲の音量にする
+        const song = songVolumeFromPlayerVolume(r.volume, latest.master)
+        if (song === null) {
+          // マスターが0のときは逆算できないので、プレイヤーを設定どおりに戻す
+          applyVolume(player, latest.volume, r.muted)
+          lastVolumeAppliedAt.current = performance.now()
+        } else {
+          updates.volume = song
+        }
       }
+      volumeRef.current = { ...latest, volume: 'volume' in updates ? r.volume : latest.volume, muted: r.muted }
+      if (Object.keys(updates).length) update(updates)
     }, VOLUME_POLL_MS)
     return () => window.clearInterval(id)
   }, [isPlayerReady, songId, update])
 
-  const handleVolumeChange = (v: number) => {
+  const handleSongVolumeChange = (v: number) => {
     const nextMuted = muted && v === 0 ? true : false
-    volumeRef.current = { volume: v, muted: nextMuted }
+    volumeRef.current = { volume: youtubeVolumeFor({ ...mix, songVolume: v }), muted: nextMuted, master: masterVolume }
     update({ volume: v, muted: nextMuted })
   }
 
+  const handleMasterVolumeChange = (v: number) => {
+    volumeRef.current = { volume: youtubeVolumeFor({ ...mix, masterVolume: v }), muted, master: v }
+    update({ masterVolume: v })
+  }
+
   const handleToggleMute = () => {
-    volumeRef.current = { volume, muted: !muted }
+    volumeRef.current = { ...volumeRef.current, muted: !muted }
     update({ muted: !muted })
   }
 
@@ -543,15 +571,6 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
             >
               🔗 譜面と一緒に再生{syncEnabled ? '：オン' : '：オフ'}
             </button>
-            <button
-              className={`button ${tabMuted ? 'button-primary' : 'button-secondary'} button-small`}
-              onClick={() => update({ tabMuted: !tabMuted })}
-              disabled={!songId}
-              aria-pressed={tabMuted}
-              title="カーソルと同期はそのまま、譜面のベース音だけ消します"
-            >
-              {tabMuted ? '🔇 ベース音：オフ' : '🔊 ベース音：オン'}
-            </button>
           </div>
 
           <div className="slider-container">
@@ -576,32 +595,87 @@ export default function YouTubePanel({ songId, isTabPlaying, tempoPercent, getTa
             )}
           </div>
 
-          <div className="slider-container">
-            <div className="slider-label">
-              <span>動画の音量</span>
-              <span className="youtube-volume-value">
-                <span>{muted ? 'ミュート' : `${volume}%`}</span>
-                <button
-                  type="button"
-                  className="button button-secondary button-small"
-                  onClick={handleToggleMute}
-                  aria-pressed={muted}
-                  aria-label={muted ? 'ミュート解除' : 'ミュート'}
-                >
-                  {muted ? '🔇' : '🔊'}
-                </button>
-              </span>
+          <div className="volume-mixer" role="group" aria-labelledby="volume-mixer-title">
+            <div id="volume-mixer-title" className="volume-mixer-title">ボリューム</div>
+
+            <div className="slider-container volume-row">
+              <div className="slider-label">
+                <label htmlFor="volume-song">曲</label>
+                <span className="youtube-volume-value">
+                  <span aria-live="polite">{muted ? 'ミュート' : `${songVolume}%`}</span>
+                  <button
+                    type="button"
+                    className="button button-secondary button-small volume-button"
+                    onClick={handleToggleMute}
+                    aria-pressed={muted}
+                    aria-label={muted ? '曲のミュート解除' : '曲をミュート'}
+                    title="動画の音とベース以外のパートの音を消します"
+                  >
+                    {muted ? '🔇' : '🔊'}
+                  </button>
+                </span>
+              </div>
+              <input
+                id="volume-song"
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                value={songVolume}
+                onChange={e => handleSongVolumeChange(Number(e.target.value))}
+                aria-label="曲の音量"
+                aria-valuetext={muted ? `ミュート（${songVolume}%）` : `${songVolume}%`}
+                className="slider"
+              />
             </div>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              step="1"
-              value={volume}
-              onChange={e => handleVolumeChange(Number(e.target.value))}
-              aria-label="動画の音量"
-              className="slider"
-            />
+
+            <div className="slider-container volume-row">
+              <div className="slider-label">
+                <label htmlFor="volume-bass">ベース</label>
+                <span className="youtube-volume-value">
+                  <span aria-live="polite">{tabMuted ? 'オフ' : `${bassVolume}%`}</span>
+                  <button
+                    type="button"
+                    className={`button ${tabMuted ? 'button-primary' : 'button-secondary'} button-small volume-button`}
+                    onClick={() => update({ tabMuted: !tabMuted })}
+                    aria-pressed={tabMuted}
+                    title="カーソルと同期はそのまま、譜面のベース音だけ消します"
+                  >
+                    {tabMuted ? '🔇 ベース音：オフ' : '🔊 ベース音：オン'}
+                  </button>
+                </span>
+              </div>
+              <input
+                id="volume-bass"
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                value={bassVolume}
+                onChange={e => update({ bassVolume: Number(e.target.value) })}
+                aria-label="ベースの音量"
+                aria-valuetext={tabMuted ? `オフ（${bassVolume}%）` : `${bassVolume}%`}
+                className="slider"
+              />
+            </div>
+
+            <div className="slider-container volume-row">
+              <div className="slider-label">
+                <label htmlFor="volume-master">マスター</label>
+                <span>{masterVolume}%</span>
+              </div>
+              <input
+                id="volume-master"
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                value={masterVolume}
+                onChange={e => handleMasterVolumeChange(Number(e.target.value))}
+                aria-label="マスター音量"
+                className="slider"
+              />
+            </div>
           </div>
 
           <div className="youtube-offset-row">

@@ -477,6 +477,70 @@
   gap: 0.5rem;
 }
 
+/* ボリューム（曲・ベース・マスター） */
+.volume-mixer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  min-width: 0;
+}
+
+.volume-mixer-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #ddd;
+}
+
+.volume-row .slider-label {
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.volume-row .slider-label label {
+  cursor: pointer;
+}
+
+.volume-row .youtube-volume-value {
+  margin-left: auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.volume-button {
+  white-space: nowrap;
+}
+
+@media (max-width: 767px) {
+  .volume-mixer {
+    padding: 0.625rem;
+  }
+
+  /* 指で操作しやすいよう、つまみとボタンを大きくする */
+  .volume-mixer .slider {
+    height: 8px;
+    margin: 18px 0;
+    touch-action: pan-y;
+  }
+
+  .volume-mixer .slider::-webkit-slider-thumb {
+    width: 28px;
+    height: 28px;
+  }
+
+  .volume-mixer .slider::-moz-range-thumb {
+    width: 28px;
+    height: 28px;
+  }
+
+  .volume-mixer .volume-button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
 .youtube-hint {
   font-size: 0.75rem;
   color: #d8b56a;

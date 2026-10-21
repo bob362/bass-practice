@@ -110,7 +110,7 @@ it('onReady applies saved volume and mute', async () => {
 it('slider change calls setVolume and unMutes', async () => {
   saveSongMediaSettings('song1', { playthroughUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', volume: 40, muted: true })
   await renderReady()
-  const input = container.querySelector<HTMLInputElement>('input[aria-label="動画の音量"]')!
+  const input = container.querySelector<HTMLInputElement>('input[aria-label="曲の音量"]')!
   expect(input.value).toBe('40')
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
   await act(async () => {
@@ -131,12 +131,12 @@ it('mute button toggles', async () => {
   saveSongMediaSettings('song1', { playthroughUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', volume: 50, muted: false })
   await renderReady()
   const player = players[0]
-  const button = container.querySelector<HTMLButtonElement>('button[aria-label="ミュート"]')!
+  const button = container.querySelector<HTMLButtonElement>('button[aria-label="曲をミュート"]')!
   await act(async () => { button.click() })
   await flushPromises()
   expect(player.mute).toHaveBeenCalled()
   expect(getSongMediaSettings('song1').muted).toBe(true)
-  const toggled = container.querySelector<HTMLButtonElement>('button[aria-label="ミュート解除"]')
+  const toggled = container.querySelector<HTMLButtonElement>('button[aria-label="曲のミュート解除"]')
   expect(toggled).not.toBeNull()
 })
 
@@ -148,7 +148,7 @@ it('poll picks up volume changed in YouTube controls', async () => {
   await act(async () => { vi.advanceTimersByTime(3000) })
   await flushPromises()
   expect(getSongMediaSettings('song1').volume).toBe(25)
-  const input = container.querySelector<HTMLInputElement>('input[aria-label="動画の音量"]')!
+  const input = container.querySelector<HTMLInputElement>('input[aria-label="曲の音量"]')!
   expect(input.value).toBe('25')
 })
 
@@ -243,20 +243,116 @@ it('quick YouTube pause/resume right after app play resumes the score', async ()
 
 it('bass sound toggle is saved per song and reported to the score', async () => {
   saveSongMediaSettings('song1', { playthroughUrl: URL1 })
-  const onTabMutedChange = vi.fn()
-  await renderReady({ onTabMutedChange })
-  expect(onTabMutedChange).toHaveBeenLastCalledWith(false)
+  const onTabMixChange = vi.fn()
+  await renderReady({ onTabMixChange })
+  expect(onTabMixChange).toHaveBeenLastCalledWith({ master: 1, bass: 1, other: 1 })
   const btn = [...container.querySelectorAll('button')].find(b => b.textContent?.includes('ベース音'))!
   await act(async () => { btn.click() })
-  expect(onTabMutedChange).toHaveBeenLastCalledWith(true)
+  expect(onTabMixChange).toHaveBeenLastCalledWith({ master: 1, bass: 0, other: 1 })
   expect(getSongMediaSettings('song1').tabMuted).toBe(true)
   expect(btn.getAttribute('aria-pressed')).toBe('true')
+  // スライダーは操作できたまま、値の表示はオフになる
+  const bass = container.querySelector<HTMLInputElement>('input[aria-label="ベースの音量"]')!
+  expect(bass.disabled).toBe(false)
+  expect(bass.closest('.slider-container')!.textContent).toContain('オフ')
 })
 
 it('old saved settings without tabMuted default to sound on', async () => {
   localStorage.setItem('bass_practice_media', JSON.stringify({ song1: { playthroughUrl: URL1, playthroughOffsetSec: 0, originalOffsetSec: 0, playbackRate: 1 } }))
-  const onTabMutedChange = vi.fn()
-  await renderReady({ onTabMutedChange })
-  expect(onTabMutedChange).toHaveBeenLastCalledWith(false)
+  const onTabMixChange = vi.fn()
+  await renderReady({ onTabMixChange })
+  expect(onTabMixChange).toHaveBeenLastCalledWith({ master: 1, bass: 1, other: 1 })
   expect(getSongMediaSettings('song1').playbackRate).toBe(1)
+})
+
+async function changeSlider(label: string, value: number) {
+  const input = container.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+  await act(async () => {
+    setter.call(input, String(value))
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await flushPromises()
+  return input
+}
+
+it('renders three labeled volume sliders in the mixer group', async () => {
+  saveSongMediaSettings('song1', { playthroughUrl: URL1 })
+  await renderReady()
+  const group = container.querySelector('[role="group"]')!
+  expect(group).not.toBeNull()
+  expect(group.textContent).toContain('ボリューム')
+  const labels = [...group.querySelectorAll<HTMLInputElement>('input[type="range"]')].map(i => i.getAttribute('aria-label'))
+  expect(labels).toEqual(['曲の音量', 'ベースの音量', 'マスター音量'])
+  for (const label of labels) {
+    const input = group.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!
+    expect(input.value).toBe('100')
+    expect(input.disabled).toBe(false)
+  }
+})
+
+it('mixer is available even without a YouTube URL', async () => {
+  const onTabMixChange = vi.fn()
+  await act(async () => { root.render(<YouTubePanel {...props} onTabMixChange={onTabMixChange} />) })
+  await changeSlider('ベースの音量', 30)
+  expect(getSongMediaSettings('song1').bassVolume).toBe(30)
+  expect(onTabMixChange).toHaveBeenLastCalledWith({ master: 1, bass: 0.3, other: 1 })
+})
+
+it('each slider saves its own field', async () => {
+  saveSongMediaSettings('song1', { playthroughUrl: URL1 })
+  await renderReady()
+  await changeSlider('ベースの音量', 60)
+  await changeSlider('マスター音量', 80)
+  await changeSlider('曲の音量', 40)
+  const saved = getSongMediaSettings('song1')
+  expect(saved.bassVolume).toBe(60)
+  expect(saved.masterVolume).toBe(80)
+  expect(saved.volume).toBe(40)
+})
+
+it('YouTube volume is song x master / 100', async () => {
+  saveSongMediaSettings('song1', { playthroughUrl: URL1, volume: 80, masterVolume: 50 })
+  await renderReady()
+  const player = players[0]
+  expect(player.setVolume).toHaveBeenCalledWith(40)
+  expect(player.setVolume.mock.calls.every(call => call[0] === 40)).toBe(true)
+  await changeSlider('マスター音量', 25)
+  expect(player.setVolume.mock.calls.at(-1)).toEqual([20])
+  await changeSlider('曲の音量', 100)
+  expect(player.setVolume.mock.calls.at(-1)).toEqual([25])
+  // ベースの音量はYouTubeに影響しない
+  const calls = player.setVolume.mock.calls.length
+  await changeSlider('ベースの音量', 10)
+  expect(player.setVolume.mock.calls.length).toBe(calls)
+})
+
+it('onTabMixChange reports master/bass/other with song mute silencing other tracks', async () => {
+  saveSongMediaSettings('song1', { playthroughUrl: URL1, volume: 50, bassVolume: 70, masterVolume: 80 })
+  const onTabMixChange = vi.fn()
+  await renderReady({ onTabMixChange })
+  expect(onTabMixChange).toHaveBeenLastCalledWith({ master: 0.8, bass: 0.7, other: 0.5 })
+  const mute = container.querySelector<HTMLButtonElement>('button[aria-label="曲をミュート"]')!
+  await act(async () => { mute.click() })
+  expect(onTabMixChange).toHaveBeenLastCalledWith({ master: 0.8, bass: 0.7, other: 0 })
+  expect(players[0].mute).toHaveBeenCalled()
+})
+
+it('poll converts YouTube volume back through the master volume', async () => {
+  vi.useFakeTimers({ toFake: [...FAKE.toFake] })
+  saveSongMediaSettings('song1', { playthroughUrl: URL1, volume: 80, masterVolume: 50 })
+  await renderReady()
+  const player = players[0]
+  await act(async () => { vi.advanceTimersByTime(3000) })
+  // 設定どおりの音量なら書き込まない
+  expect(getSongMediaSettings('song1').volume).toBe(80)
+  player.vol = 30
+  await act(async () => { vi.advanceTimersByTime(3000) })
+  await flushPromises()
+  expect(getSongMediaSettings('song1').volume).toBe(60)
+  expect(getSongMediaSettings('song1').masterVolume).toBe(50)
+  const calls = player.setVolume.mock.calls.length
+  await act(async () => { vi.advanceTimersByTime(5000) })
+  expect(getSongMediaSettings('song1').volume).toBe(60)
+  expect(player.setVolume.mock.calls.slice(calls).every(call => call[0] === 30)).toBe(true)
 })

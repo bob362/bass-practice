@@ -180,9 +180,13 @@ export interface SongMediaSettings {
   playthroughOffsetSec: number
   originalOffsetSec: number
   playbackRate: number
-  /** 動画の音量 0-100 */
+  /** 曲の音量 0-100（YouTube とベース以外の譜面） */
   volume?: number
-  /** 動画をミュートするか */
+  /** ベースの音量 0-100 */
+  bassVolume?: number
+  /** 全体の音量 0-100 */
+  masterVolume?: number
+  /** 曲をミュートするか（YouTube とベース以外の譜面） */
   muted?: boolean
   /** 譜面（ベース）の音を鳴らさない。カーソルと同期は動いたまま */
   tabMuted?: boolean
@@ -193,7 +197,7 @@ export const SONGS_STORAGE_KEY = STORAGE_KEY
 export const DEFAULT_VIDEO_VOLUME = 100
 export const DEFAULT_MEDIA_SETTINGS: Readonly<SongMediaSettings> = {
   playthroughOffsetSec: 0, originalOffsetSec: 0, playbackRate: 1,
-  volume: 100, muted: false,
+  volume: 100, bassVolume: 100, masterVolume: 100, muted: false,
 }
 
 export function isSongMediaSettings(value: unknown): value is SongMediaSettings {
@@ -205,6 +209,10 @@ export function isSongMediaSettings(value: unknown): value is SongMediaSettings 
     Number.isFinite(v.playbackRate) && v.playbackRate > 0 &&
     (v.volume === undefined || (typeof v.volume === 'number' && Number.isFinite(v.volume) &&
       v.volume >= 0 && v.volume <= 100)) &&
+    (v.bassVolume === undefined || (typeof v.bassVolume === 'number' && Number.isFinite(v.bassVolume) &&
+      v.bassVolume >= 0 && v.bassVolume <= 100)) &&
+    (v.masterVolume === undefined || (typeof v.masterVolume === 'number' && Number.isFinite(v.masterVolume) &&
+      v.masterVolume >= 0 && v.masterVolume <= 100)) &&
     (v.muted === undefined || typeof v.muted === 'boolean') &&
     (v.tabMuted === undefined || typeof v.tabMuted === 'boolean')
 }
@@ -224,8 +232,11 @@ export function getSongMediaSettings(songId: string): SongMediaSettings {
 export function saveSongMediaSettings(songId: string, updates: Partial<SongMediaSettings>): SongMediaSettings {
   if (!songId) throw new Error('Song ID is required')
   const normalized: Partial<SongMediaSettings> = { ...updates }
-  if (typeof normalized.volume === 'number' && Number.isFinite(normalized.volume)) {
-    normalized.volume = Math.round(Math.min(100, Math.max(0, normalized.volume)))
+  for (const key of ['volume', 'bassVolume', 'masterVolume'] as const) {
+    const value = normalized[key]
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      normalized[key] = Math.round(Math.min(100, Math.max(0, value)))
+    }
   }
   const settings = { ...getSongMediaSettings(songId), ...normalized }
   if (!isSongMediaSettings(settings)) throw new Error('Invalid media settings')

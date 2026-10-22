@@ -654,3 +654,196 @@
   flex: 1;
   min-width: 0;
 }
+
+/* ===== スマホ（767.98px以下） ===== */
+@media (max-width: 767.98px) {
+  .pdf-import-container {
+    padding: 1rem calc(1rem + env(safe-area-inset-right, 0px)) calc(1.5rem + env(safe-area-inset-bottom, 0px)) calc(1rem + env(safe-area-inset-left, 0px));
+  }
+
+  .pdf-import-container h2 {
+    margin-bottom: 1rem;
+    font-size: 1.3rem;
+  }
+
+  .upload-section {
+    padding: 1rem;
+  }
+
+  .file-input-area {
+    padding: 1rem 0.5rem;
+  }
+
+  .review-container {
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .pdf-preview {
+    min-width: 0;
+    max-height: 50vh;
+  }
+
+  .tab-editor {
+    padding: 1rem;
+  }
+
+  .measures-editor {
+    max-height: none;
+  }
+
+  .measure-item {
+    flex-wrap: wrap;
+    padding: 0.625rem;
+  }
+
+  .measure-input {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .action-buttons {
+    flex-wrap: wrap;
+  }
+
+  .action-buttons .button {
+    flex: 1 1 auto;
+  }
+
+  .form-group input {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  /* ---- フォルダ一覧（折りたたみ） ---- */
+  .folder-sidebar {
+    padding: 0.5rem;
+  }
+
+  .folder-sidebar-toggle {
+    width: 100%;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.625rem;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font: inherit;
+    font-size: 0.95rem;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .folder-sidebar-toggle:focus-visible {
+    outline: 2px solid #4a9eff;
+    outline-offset: 1px;
+  }
+
+  .folder-sidebar-toggle-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #aaa;
+  }
+
+  .folder-sidebar-current {
+    color: #aaccff;
+    font-weight: 600;
+  }
+
+  .folder-sidebar-toggle-arrow {
+    font-size: 0.75rem;
+    color: #888;
+  }
+
+  .folder-sidebar-body:not([hidden]) {
+    margin-top: 0.5rem;
+  }
+
+  /* 見出しは折りたたみボタンが兼ねる */
+  .folder-sidebar-title {
+    display: none;
+  }
+
+  .folder-select-button,
+  .folder-create-button,
+  .tag-filter-chip,
+  .tag-filter-clear {
+    min-height: 44px;
+  }
+
+  .folder-item-actions {
+    opacity: 1;
+  }
+
+  .folder-item-actions .icon-button {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0.25rem;
+  }
+
+  .folder-inline-form input,
+  .song-search-input,
+  .tag-editor-input-row input,
+  .song-folder-select {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  /* ---- 曲一覧（タッチではドラッグの代わりにフォルダ選択を使う） ---- */
+  .song-library .song-item {
+    padding: 0.75rem 0.875rem;
+  }
+
+  .song-library .song-info {
+    flex: 1 1 100%;
+  }
+
+  .song-title,
+  .song-meta {
+    overflow-wrap: anywhere;
+  }
+
+  .song-library .song-actions {
+    flex: 1 1 100%;
+    flex-wrap: nowrap;
+  }
+
+  .song-folder-select {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: none;
+    padding: 0.5rem 0.625rem;
+  }
+
+  .song-actions .icon-button {
+    flex: none;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .tag-chip.editable {
+    padding-right: 0;
+  }
+
+  .tag-chip-remove {
+    min-width: 44px;
+    min-height: 44px;
+    font-size: 1rem;
+  }
+
+  .tag-editor {
+    min-width: 0;
+    max-width: 100%;
+    padding: 0.625rem;
+  }
+
+  .tag-editor-input-row .button {
+    flex: none;
+  }
+}

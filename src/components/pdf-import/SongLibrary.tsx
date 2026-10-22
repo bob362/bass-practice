@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import {
   ALL_FOLDERS, UNFILED, ConvertedSong, createFolder, deleteFolder, filterSongs, getAllTags, getFolders,
@@ -6,9 +6,12 @@ import {
 } from '../../utils/storage'
 import type { FolderEntry } from '../../shared/syncMerge'
 import { SONGS_CHANGED_EVENT } from '../../utils/cloudSync'
+import { useMediaQuery } from '../../hooks/useMediaQuery'
+import { MOBILE_MEDIA_QUERY } from '../../utils/mobile'
 
 export const SONG_DRAG_TYPE = 'text/x-song-id'
 const TAG_DATALIST_ID = 'song-library-tag-options'
+const FOLDER_BODY_ID = 'song-library-folder-body'
 
 interface SongLibraryProps {
   songs: ConvertedSong[]
@@ -39,6 +42,11 @@ export default function SongLibrary({ songs, onOpenSong, onDeleteSong, onSongsUp
   const [tagEditorFor, setTagEditorFor] = useState<string | null>(null)
   const [tagInput, setTagInput] = useState('')
   const [dropTarget, setDropTarget] = useState<string | null>(null)
+  // スマホではフォルダ一覧を折りたたむ（PCでは常に表示）
+  const isMobile = useMediaQuery(MOBILE_MEDIA_QUERY)
+  const [foldersOpen, setFoldersOpen] = useState(false)
+  const folderToggleRef = useRef<HTMLButtonElement>(null)
+  const folderBodyHidden = isMobile && !foldersOpen
 
   const reloadFolders = () => setFolders(getFolders())
 
@@ -185,7 +193,14 @@ export default function SongLibrary({ songs, onOpenSong, onDeleteSong, onSongsUp
       <button
         type="button"
         className="folder-select-button"
-        onClick={() => setSelectedFolder(id)}
+        onClick={() => {
+          setSelectedFolder(id)
+          // スマホでは選んだら一覧を閉じて曲を見せる（隠れたボタンにフォーカスを残さない）
+          if (isMobile) {
+            setFoldersOpen(false)
+            folderToggleRef.current?.focus()
+          }
+        }}
         aria-pressed={selected}
         aria-current={selected ? 'true' : undefined}
         title={`${label}（${count}曲）を表示`}
@@ -197,103 +212,126 @@ export default function SongLibrary({ songs, onOpenSong, onDeleteSong, onSongsUp
     )
   }
 
+  const selectedFolderName = selectedFolder === ALL_FOLDERS ? 'すべての曲'
+    : selectedFolder === UNFILED ? '未分類'
+    : folders.find(f => f.id === selectedFolder)?.name ?? 'すべての曲'
+
   const folderItemClass = (id: string) =>
     ['folder-item', selectedFolder === id ? 'selected' : '', dropTarget === id ? 'drop-target' : ''].filter(Boolean).join(' ')
 
   return (
     <div className="song-library">
       <nav className="folder-sidebar" aria-label="フォルダ">
-        <h3 className="folder-sidebar-title">フォルダ</h3>
-        <ul className="folder-list">
-          <li data-testid="folder-item" className={folderItemClass(ALL_FOLDERS)}>
-            {renderFolderButton(ALL_FOLDERS, 'すべての曲', '🎵')}
-          </li>
-          <li data-testid="folder-item" className={folderItemClass(UNFILED)} {...folderDropProps(UNFILED)}>
-            {renderFolderButton(UNFILED, '未分類', '📥')}
-          </li>
-          {folders.map(folder => (
-            <li
-              key={folder.id}
-              data-testid="folder-item"
-              className={folderItemClass(folder.id)}
-              {...folderDropProps(folder.id)}
-            >
-              {editingFolderId === folder.id ? (
-                <form className="folder-inline-form" onSubmit={submitRename}>
-                  <input
-                    type="text"
-                    value={editFolderName}
-                    onChange={e => setEditFolderName(e.target.value)}
-                    onKeyDown={e => { if (!isComposingKey(e) && e.key === 'Escape') { setEditingFolderId(null); setFolderError(null) } }}
-                    aria-label={`フォルダ「${folder.name}」の新しい名前`}
-                    autoFocus
-                  />
-                  <button type="submit" className="button button-primary button-small">保存</button>
-                  <button
-                    type="button"
-                    className="button button-secondary button-small"
-                    onClick={() => { setEditingFolderId(null); setFolderError(null) }}
-                  >
-                    キャンセル
-                  </button>
-                </form>
-              ) : (
-                <>
-                  {renderFolderButton(folder.id, folder.name, '📁')}
-                  <span className="folder-item-actions">
-                    <button
-                      type="button"
-                      className="icon-button"
-                      onClick={() => startRename(folder)}
-                      aria-label={`フォルダ「${folder.name}」の名前を変更`}
-                      title="名前を変更"
-                    >
-                      ✏️
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-button delete"
-                      onClick={() => handleDeleteFolder(folder)}
-                      aria-label={`フォルダ「${folder.name}」を削除`}
-                      title="フォルダを削除"
-                    >
-                      🗑️
-                    </button>
-                  </span>
-                </>
-              )}
-            </li>
-          ))}
-        </ul>
-        {creating ? (
-          <form className="folder-inline-form folder-create-form" onSubmit={submitNewFolder}>
-            <input
-              type="text"
-              value={newFolderName}
-              onChange={e => setNewFolderName(e.target.value)}
-              onKeyDown={e => { if (!isComposingKey(e) && e.key === 'Escape') { setCreating(false); setFolderError(null) } }}
-              placeholder="フォルダ名"
-              aria-label="新しいフォルダ名"
-              autoFocus
-            />
-            <button type="submit" className="button button-primary button-small">作成</button>
-            <button
-              type="button"
-              className="button button-secondary button-small"
-              onClick={() => { setCreating(false); setNewFolderName(''); setFolderError(null) }}
-            >
-              キャンセル
-            </button>
-          </form>
-        ) : (
+        {isMobile && (
           <button
             type="button"
-            className="folder-create-button"
-            onClick={() => { setCreating(true); setFolderError(null) }}
+            ref={folderToggleRef}
+            className="folder-sidebar-toggle"
+            data-testid="folder-sidebar-toggle"
+            aria-expanded={foldersOpen}
+            aria-controls={FOLDER_BODY_ID}
+            onClick={() => setFoldersOpen(open => !open)}
           >
-            + フォルダを作成
+            <span className="folder-icon" aria-hidden="true">📁</span>
+            <span className="folder-sidebar-toggle-label">
+              フォルダ: <span className="folder-sidebar-current">{selectedFolderName}</span>
+            </span>
+            <span className="folder-sidebar-toggle-arrow" aria-hidden="true">{foldersOpen ? '▲' : '▼'}</span>
           </button>
         )}
+        <div id={FOLDER_BODY_ID} className="folder-sidebar-body" hidden={folderBodyHidden}>
+          <h3 className="folder-sidebar-title">フォルダ</h3>
+          <ul className="folder-list">
+            <li data-testid="folder-item" className={folderItemClass(ALL_FOLDERS)}>
+              {renderFolderButton(ALL_FOLDERS, 'すべての曲', '🎵')}
+            </li>
+            <li data-testid="folder-item" className={folderItemClass(UNFILED)} {...folderDropProps(UNFILED)}>
+              {renderFolderButton(UNFILED, '未分類', '📥')}
+            </li>
+            {folders.map(folder => (
+              <li
+                key={folder.id}
+                data-testid="folder-item"
+                className={folderItemClass(folder.id)}
+                {...folderDropProps(folder.id)}
+              >
+                {editingFolderId === folder.id ? (
+                  <form className="folder-inline-form" onSubmit={submitRename}>
+                    <input
+                      type="text"
+                      value={editFolderName}
+                      onChange={e => setEditFolderName(e.target.value)}
+                      onKeyDown={e => { if (!isComposingKey(e) && e.key === 'Escape') { setEditingFolderId(null); setFolderError(null) } }}
+                      aria-label={`フォルダ「${folder.name}」の新しい名前`}
+                      autoFocus
+                    />
+                    <button type="submit" className="button button-primary button-small">保存</button>
+                    <button
+                      type="button"
+                      className="button button-secondary button-small"
+                      onClick={() => { setEditingFolderId(null); setFolderError(null) }}
+                    >
+                      キャンセル
+                    </button>
+                  </form>
+                ) : (
+                  <>
+                    {renderFolderButton(folder.id, folder.name, '📁')}
+                    <span className="folder-item-actions">
+                      <button
+                        type="button"
+                        className="icon-button"
+                        onClick={() => startRename(folder)}
+                        aria-label={`フォルダ「${folder.name}」の名前を変更`}
+                        title="名前を変更"
+                      >
+                        ✏️
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-button delete"
+                        onClick={() => handleDeleteFolder(folder)}
+                        aria-label={`フォルダ「${folder.name}」を削除`}
+                        title="フォルダを削除"
+                      >
+                        🗑️
+                      </button>
+                    </span>
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+          {creating ? (
+            <form className="folder-inline-form folder-create-form" onSubmit={submitNewFolder}>
+              <input
+                type="text"
+                value={newFolderName}
+                onChange={e => setNewFolderName(e.target.value)}
+                onKeyDown={e => { if (!isComposingKey(e) && e.key === 'Escape') { setCreating(false); setFolderError(null) } }}
+                placeholder="フォルダ名"
+                aria-label="新しいフォルダ名"
+                autoFocus
+              />
+              <button type="submit" className="button button-primary button-small">作成</button>
+              <button
+                type="button"
+                className="button button-secondary button-small"
+                onClick={() => { setCreating(false); setNewFolderName(''); setFolderError(null) }}
+              >
+                キャンセル
+              </button>
+            </form>
+          ) : (
+            <button
+              type="button"
+              className="folder-create-button"
+              onClick={() => { setCreating(true); setFolderError(null) }}
+            >
+              + フォルダを作成
+            </button>
+          )}
+        </div>
         {folderError && <div className="error-message folder-error" role="alert">{folderError}</div>}
       </nav>
 

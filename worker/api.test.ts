@@ -1,5 +1,6 @@
 // @vitest-environment node
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { _resetJwksCache } from './auth'
 import worker from './index'
 import type { Env } from './index'
 import { FakeR2 } from './testUtils'
@@ -46,6 +47,33 @@ describe('worker API',()=>{
   it('isolates users',async()=>{
     await request('/api/songs/a','PUT',{id:'a',updatedAt:1})
     expect(await (await request('/api/songs','GET',undefined,'other@example.com')).json()).toEqual([])
+  })
+  it('upserts through a signed service JWT in the human owner namespace',async()=>{
+    _resetJwksCache()
+    const pair = await crypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']) as CryptoKeyPair
+    const jwk = {...await crypto.subtle.exportKey('jwk',pair.publicKey),kid:'service'}
+    const encode = (value:unknown) => Buffer.from(JSON.stringify(value)).toString('base64url')
+    const unsigned = `${encode({alg:'RS256',kid:'service'})}.${encode({iss:'https://test',aud:'test',exp:Date.now()/1000+300,common_name:'client-id',sub:'service-sub'})}`
+    const signature = await crypto.subtle.sign('RSASSA-PKCS1-v1_5',pair.privateKey,new TextEncoder().encode(unsigned))
+    const headers = {'Cf-Access-Jwt-Assertion':`${unsigned}.${Buffer.from(signature).toString('base64url')}`}
+    env.ACCESS_SERVICE_TOKENS = 'client-id=User@Example.com'
+    const fetchKeys = vi.spyOn(globalThis,'fetch').mockResolvedValue(new Response(JSON.stringify({keys:[jwk]})))
+    try {
+      const song = {id:'synthetic',updatedAt:1,createdAt:1,title:'Synthetic fixture',texData:'',gpData:'AAEC',gpFormat:'gp5',folderId:'practice',tags:['synthetic']}
+      expect((await request('/api/songs/synthetic','PUT',song,null,headers)).status).toBe(200)
+      expect(await (await request('/api/songs/synthetic')).json()).toEqual(song)
+      const current = await (await request('/api/songs/synthetic','GET',undefined,null,headers)).json() as typeof song
+      const updated = {...current,title:'Updated synthetic fixture',updatedAt:2}
+      expect((await request('/api/songs/synthetic','PUT',updated,null,headers)).status).toBe(200)
+      expect(await (await request('/api/songs/synthetic')).json()).toEqual(updated)
+      expect((await request('/api/songs/synthetic','GET',undefined,'other@example.com')).status).toBe(404)
+      expect(await (await request('/api/songs','GET',undefined,'other@example.com')).json()).toEqual([])
+      env.ACCESS_SERVICE_TOKENS = undefined
+      expect((await request('/api/songs/synthetic','GET',undefined,null,headers)).status).toBe(401)
+    } finally {
+      fetchKeys.mockRestore()
+      _resetJwksCache()
+    }
   })
   it('rejects malformed IDs, mismatches, invalid JSON and oversized bodies',async()=>{
     for (const method of ['GET','PUT','DELETE']) expect((await request('/api/songs/bad%20id',method)).status).toBe(400)

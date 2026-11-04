@@ -73,6 +73,7 @@ class FakeApi {
   destroy = vi.fn()
   load = vi.fn()
   tex = vi.fn()
+  updateSettings = vi.fn()
 
   private tick = 0
   tickHistory: number[] = []
@@ -86,9 +87,8 @@ class FakeApi {
     this.tickHistory.push(value)
   }
 
-  constructor(_element: HTMLElement, _options: unknown) {
+  constructor(_element: HTMLElement, public settings: Record<string, unknown>) {
     void _element
-    void _options
     apiInstances.push(this)
   }
 }

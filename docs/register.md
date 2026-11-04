@@ -25,7 +25,7 @@ node scripts/register-song.mjs --gp /path/to/song.gp5 --title 'Example Song' \
 
 `--dry-run` を外すと送信します。dry-runではネットワーク通信をせず、メソッド・URL・ID・曲名・フィールド名・GPバイト数を表示します。秘密値やGP本体は表示しません。
 
-環境変数は `--env-file /path/to/private.env` でも指定できます（`KEY=VALUE` 形式）。ファイルをGit管理しないでください。曲名の既定値はファイル名です。`--id` を省略すると曲名から決定的なIDを生成します。同じ曲を改題するときは元の `--id` を指定してください。IDは `^[A-Za-z0-9_\-.]{1,128}$` です。URL引数にはYouTube動画URLを指定します。省略したアーティストやURLは既存値を維持します。
+環境変数は `--env-file /path/to/private.env` でも指定できます（`KEY=VALUE` 形式）。ファイルをGit管理しないでください。曲名の既定値はファイル名です。`--id` を省略すると曲名から決定的なIDを生成します。同じ曲を改題するときは元の `--id` を指定してください。IDは `^[A-Za-z0-9_\-.]{1,128}$` です（URLのパスとして解釈される `.` と `..` は使用できません）。URL引数にはYouTube動画URLを指定します。省略したアーティストやURLは既存値を維持します。
 
 ## 保存形式と同期
 
@@ -59,4 +59,4 @@ curl --fail-with-body -sS -X PUT \
   "$BASS_PRACTICE_API_BASE/api/songs/$SONG_ID"
 ```
 
-新規の場合は404を確認後、上記の新規フィールドを含むJSONを作成してください。PUT成功時は `{ok:true,song:{id,updatedAt,...要約}}`、同一時刻の場合は既存曲JSON、競合時は409（`{error:"conflict",current:...}` または `{error:"busy"}`）です。最大曲JSONサイズは20 MiBです。動画の更新は同様に `/api/settings` をGETし、対象entryだけ変更して全体をPUTします。
+新規の場合は404を確認後、上記の新規フィールドを含むJSONを作成してください。PUT成功時は `{ok:true,song:{id,updatedAt,...要約}}`、同一時刻の場合は既存曲JSON、競合時は409（`{error:"conflict",current:...}` または `{error:"busy"}`）です。最大曲JSONサイズは20 MiBです。動画の更新は同様に `/api/settings` をGETし、対象entryだけ変更してPUTします（サーバーが他のentryとマージします）。

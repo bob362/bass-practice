@@ -39,6 +39,8 @@ npm run dev
 npm run build
 ```
 
+自動クライアントからの曲登録・更新は [曲登録APIとCLI](docs/register.md) を参照してください。
+
 ## 使い方
 
 ### 1. PDFタブ譜のインポート（新機能！）

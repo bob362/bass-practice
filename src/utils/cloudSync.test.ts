@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { emptyFoldersDoc, emptyMediaDoc, emptyProgressDoc, mergeFoldersDocs, mergeMediaDocs, mergeProgressDocs, summarizeSong, type SongRecord } from '../shared/syncMerge'
 import { _resetCloudSyncForTests, getSyncStatus, SONGS_CHANGED_EVENT, startCloudSync, syncNow } from './cloudSync'
-import { applyFoldersSyncDoc, createFolder, deleteFolder, deleteSong, getAllSongs, getFolders, getFoldersSyncDoc, getMediaSyncDoc, getSongById, getSongTombstones, notifyLocalChange, putSongsFromRemote, saveSong, saveSongMediaSettings, renameFolder, songFolderId, setSongFolder, setSongTags, SONGS_STORAGE_KEY, UNFILED, updateSong } from './storage'
+import { applyFoldersSyncDoc, createFolder, deleteFolder, deleteSong, getAllSongs, getFolders, getFoldersSyncDoc, getMediaSyncDoc, getSongMediaSettings, getSongById, getSongTombstones, notifyLocalChange, putSongsFromRemote, saveSong, saveSongMediaSettings, renameFolder, songFolderId, setSongFolder, setSongTags, SONGS_STORAGE_KEY, UNFILED, updateSong } from './storage'
 import { addSession, getProgressSyncDoc } from './progress'
 
 function server() {
@@ -33,6 +33,21 @@ const song = (id: string, updatedAt = 10) => ({id, title:id, createdAt:1, update
 beforeEach(() => { _resetCloudSyncForTests(); localStorage.clear() })
 afterEach(() => { _resetCloudSyncForTests(); vi.restoreAllMocks() })
 describe('cloud sync', () => {
+  it('imports an API registered GP song and both video URLs, then pulls a newer replacement', async () => {
+    const api = server()
+    const registered = {id:'api-song', title:'Synthetic song', artist:'Test', texData:'', gpData:'AAECAw==', gpFormat:'gp5', createdAt:1, updatedAt:20}
+    api.songs.set(registered.id, registered)
+    const settings = {playthroughUrl:'https://youtu.be/dQw4w9WgXcQ', originalUrl:'https://www.youtube.com/watch?v=dQw4w9WgXcQ', playthroughOffsetSec:2, originalOffsetSec:3, playbackRate:1, volume:42}
+    api.media = {version:1, entries:{[registered.id]:{updatedAt:20, settings}}}
+    await startCloudSync({fetch:api.fetch})
+    expect(getSongById(registered.id)).toEqual(registered)
+    expect(getSongMediaSettings(registered.id)).toMatchObject(settings)
+    api.songs.set(registered.id, {...registered, title:'Updated synthetic song', gpData:'BAUGBw==', updatedAt:21})
+    await syncNow()
+    expect(getSongById(registered.id)).toMatchObject({title:'Updated synthetic song', gpData:'BAUGBw==', updatedAt:21})
+    expect(getSongMediaSettings(registered.id)).toMatchObject(settings)
+  })
+
   it('backfills legacy songs and pushes them; start is idempotent', async () => {
     const api = server()
     localStorage.setItem(SONGS_STORAGE_KEY, JSON.stringify([{id:'legacy', title:'old', texData:'tab', createdAt:123}]))

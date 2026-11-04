@@ -14,7 +14,7 @@ beforeAll(async()=>{
   pair = await crypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']) as CryptoKeyPair
   jwk = {...(await crypto.subtle.exportKey('jwk',pair.publicKey) as JsonWebKey),kid:'one'}
 })
-beforeEach(()=>_resetJwksCache())
+beforeEach(()=>{ _resetJwksCache(); vi.unstubAllGlobals() })
 describe('JWT verification',()=>{
   const opts = () => ({teamDomain,aud,now,fetchJwks:vi.fn(async()=>({keys:[jwk]}))})
   it('verifies valid signatures and caches JWKS',async()=>{
@@ -52,5 +52,25 @@ describe('JWT verification',()=>{
     const env = {DEV_FAKE_IDENTITY:'1'} as Env
     expect(await identify(req,env)).toBe('user@example.com')
     expect(await identify(req,{} as Env)).toBeNull()
+  })
+  const identityEnv = (mapping?:string) => ({ACCESS_TEAM_DOMAIN:teamDomain,ACCESS_AUD:aud,ACCESS_SERVICE_TOKENS:mapping}) as Env
+  async function identifyToken(claims:Record<string,unknown>, mapping?:string) {
+    vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({keys:[jwk]}))))
+    return identify(new Request('https://test/api/songs',{headers:{'Cf-Access-Jwt-Assertion':await token({exp:Date.now()/1000+300,...claims})}}),identityEnv(mapping))
+  }
+  it('maps an allowed service token to its lowercase owner identity',async()=>{
+    expect(await identifyToken({email:undefined,common_name:'client-id',sub:'service-sub'},'other=other@example.com, client-id= OWNER@EXAMPLE.COM ')).toBe('owner@example.com')
+  })
+  it('rejects an unlisted service token instead of using its subject',async()=>{
+    expect(await identifyToken({email:undefined,common_name:'unknown',sub:'service-sub'},'client-id=owner@example.com')).toBeNull()
+  })
+  it('rejects service tokens when the owner mapping is missing',async()=>{
+    expect(await identifyToken({email:undefined,common_name:'client-id',sub:'service-sub'})).toBeNull()
+  })
+  it('rejects a mapped service token with the wrong audience',async()=>{
+    expect(await identifyToken({email:undefined,common_name:'client-id',aud:'other'},'client-id=owner@example.com')).toBeNull()
+  })
+  it('keeps human email identities unchanged with service mappings configured',async()=>{
+    expect(await identifyToken({},'client-id=owner@example.com')).toBe('user@example.com')
   })
 })

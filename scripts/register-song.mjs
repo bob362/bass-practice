@@ -33,11 +33,11 @@ export function parseEnv(text) {
 }
 export function songId(title, explicit) {
   if (explicit !== undefined) {
-    if (!ID.test(explicit)) throw new Error('Invalid --id (use 1–128 letters, digits, _, -, or .)')
+    if (!ID.test(explicit) || explicit === '.' || explicit === '..') throw new Error('Invalid --id (use 1–128 letters, digits, _, -, or .)')
     return explicit
   }
   const slug = title.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 128)
-  return slug || `song-${createHash('sha256').update(title).digest('hex').slice(0, 24)}`
+  return (slug && slug !== '.' && slug !== '..' ? slug : '') || `song-${createHash('sha256').update(title).digest('hex').slice(0, 24)}`
 }
 export function youtubeUrl(value) {
   let url

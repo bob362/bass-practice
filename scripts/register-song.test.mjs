@@ -16,7 +16,8 @@ describe('register-song helpers', () => {
     expect(songId('A Nice Song')).toBe('a-nice-song')
     expect(songId('日本語')).toMatch(/^[A-Za-z0-9_.-]{1,128}$/)
     expect(songId('日本語')).toBe(songId('日本語'))
-    expect(() => songId('title', '../wrong/id')).toThrow()
+    for (const id of ['../wrong/id', '.', '..']) expect(() => songId('title', id)).toThrow()
+    expect(songId('..')).not.toBe('..')
   })
   it('validates YouTube video URLs and rejects deceptive hosts', () => {
     expect(youtubeUrl('https://youtu.be/abcdefghijk')).toBe('https://youtu.be/abcdefghijk')

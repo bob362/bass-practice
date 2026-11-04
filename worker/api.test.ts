@@ -66,8 +66,15 @@ describe('worker API',()=>{
       const updated = {...current,title:'Updated synthetic fixture',updatedAt:2}
       expect((await request('/api/songs/synthetic','PUT',updated,null,headers)).status).toBe(200)
       expect(await (await request('/api/songs/synthetic')).json()).toEqual(updated)
+      const media = {version:1,entries:{synthetic:{updatedAt:1,settings:{playthroughOffsetSec:3,originalOffsetSec:0,playbackRate:1,volume:60}}}}
+      await request('/api/settings','PUT',media)
+      const currentMedia = await (await request('/api/settings','GET',undefined,null,headers)).json() as typeof media
+      const updatedMedia = {version:1,entries:{synthetic:{updatedAt:2,settings:{...currentMedia.entries.synthetic.settings,playthroughUrl:'https://www.youtube.com/watch?v=abcdefghijk'}}}}
+      expect((await request('/api/settings','PUT',updatedMedia,null,headers)).status).toBe(200)
+      expect(await (await request('/api/settings')).json()).toEqual(updatedMedia)
       expect((await request('/api/songs/synthetic','GET',undefined,'other@example.com')).status).toBe(404)
       expect(await (await request('/api/songs','GET',undefined,'other@example.com')).json()).toEqual([])
+      expect(await (await request('/api/settings','GET',undefined,'other@example.com')).json()).toEqual({version:1,entries:{}})
       env.ACCESS_SERVICE_TOKENS = undefined
       expect((await request('/api/songs/synthetic','GET',undefined,null,headers)).status).toBe(401)
     } finally {
